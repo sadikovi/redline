@@ -14,13 +14,14 @@ See [`local-review-spec.md`](local-review-spec.md) for the full design.
 ## Install
 
 ```sh
-# 1. Put `review` on your PATH (any directory on PATH works)
-ln -s "$PWD/review" ~/.local/bin/review
-
-# 2. Install the slash command
 mkdir -p ~/.claude/commands
 cp commands/local-review.md ~/.claude/commands/
 ```
+
+The slash command runs the script as `python3 /Users/ivansadikov/Developer/local-review/review`,
+so nothing needs to be on `PATH`. If you clone the repo elsewhere, update that path in
+`commands/local-review.md` (both the `allowed-tools` line and the `REVIEW` definition).
+To type `review` by hand, optionally symlink it: `ln -s "$PWD/review" ~/.local/bin/review`.
 
 ## Use
 
