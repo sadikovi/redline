@@ -672,18 +672,28 @@ class Core:
     def wait(self, timeout):
         deadline = time.monotonic() + timeout
         with self.cond:
+            rid = self._require()["id"]
             while True:
-                r = self._require()
+                if self.review is None or self.review["id"] != rid:
+                    return "ENDED"
+                r = copy.deepcopy(self.review)
                 n = len(r["rounds"])
                 if r["status"] in (CHANGES, APPROVED) and r["consumed"] < n:
                     text = format_wait(r)
                     r["consumed"] = n
                     self._commit(r)
                     return text
+                if self.closing:
+                    return "STOPPED"
                 remaining = deadline - time.monotonic()
-                if remaining <= 0 or self.closing:
+                if remaining <= 0:
                     return "TIMEOUT"
                 self.cond.wait(remaining)
+
+    def open_url(self):
+        with self.cond:
+            r = self._require()
+            return "%s %s" % (r["id"], self.url)
 
     def push(self, text):
         with self.cond:
@@ -1022,6 +1032,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._send(200, core.wait(timeout), "text/plain")
             if path == "/api/status":
                 return self._send(200, core.status(), "text/plain")
+            if path == "/api/url":
+                return self._send(200, core.open_url(), "text/plain")
         elif method == "POST":
             if path == "/api/comments":
                 return self._send(200, core.add_comment(body))
@@ -1108,6 +1120,7 @@ def serve(repo):
     finally:
         stopped.set()
         core.close()
+        time.sleep(0.3)  # let woken long-polls (e.g. `wait` -> STOPPED) send their responses
         info = read_json(info_path)
         if isinstance(info, dict) and info.get("pid") == os.getpid():
             try:
@@ -1252,6 +1265,7 @@ def main(argv=None):
     sub.add_parser("push", help="reply to comments (stdin) and push a new round")
     sub.add_parser("commit", help="commit the approved snapshot; message from stdin")
     sub.add_parser("status", help="show the current review")
+    sub.add_parser("open", help="open the current review page in the browser")
     sub.add_parser("end", help="archive the review and delete its refs")
     sub.add_parser("serve", help="run the server in the foreground")
     sub.add_parser("stop", help="stop the server")
@@ -1280,6 +1294,9 @@ def main(argv=None):
             out = client.call("POST", "/api/commit", {"message": sys.stdin.read()}, timeout=600)
         elif args.cmd == "status":
             out = client.call("GET", "/api/status")
+        elif args.cmd == "open":
+            out = client.call("GET", "/api/url")
+            webbrowser.open(out.rsplit(" ", 1)[-1])
         else:
             out = client.call("POST", "/api/end")
         print(out)

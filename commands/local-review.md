@@ -1,15 +1,28 @@
 ---
 description: GitHub-style local review of current changes; iterate until approved
+argument-hint: "[<base-ref> | new [<base-ref>] | status | open | pause | stop]"
 allowed-tools: Bash(python3 /Users/ivansadikov/Developer/local-review/review:*), Bash(git log:*), Bash(git diff:*), Bash(git status:*)
 ---
 `REVIEW` below stands for `python3 /Users/ivansadikov/Developer/local-review/review`. Always run it with that full command.
 
-Run `REVIEW start $ARGUMENTS` and give the user the URL in one line.
+Arguments: `$ARGUMENTS`. Act on the first word:
+
+- `status`: run `REVIEW status` and relay its output in one line. Nothing else.
+- `open`: run `REVIEW open` (opens the page) and give the user the URL in one line. Nothing else.
+- `pause`: stop any background `REVIEW wait` you started, then run `REVIEW stop`. Say "Paused; run /local-review to resume." in one line. The review is kept.
+- `stop`: stop any background `REVIEW wait` you started, run `REVIEW end` (ignore a "no active review" error), then `REVIEW stop`. Say "Review ended." in one line.
+- `new`: run `REVIEW start --new <remaining arguments>`, then continue with **The loop** below.
+- anything else, or nothing: run `REVIEW start $ARGUMENTS`, then continue with **The loop** below.
+
+## The loop
+
+Give the user the URL from `REVIEW start` in one line.
 
 Then run `REVIEW wait` as a background command and stop. You will be notified when it exits. Never poll.
 
 When `REVIEW wait` exits:
 - TIMEOUT: start `REVIEW wait` in the background again. Say nothing.
+- STOPPED or ENDED: the review was paused, stopped or replaced. Say nothing and do not wait again.
 - APPROVED without `commit=requested`: say "Approved." in one line. Do not commit, stage or end the review unless asked.
 - APPROVED with `commit=requested`: write a commit message for the reviewed changes. Base it on what you changed and on the commits already on the branch (`git log -n 20`), matching their style. Then run it once with a heredoc and do not commit any other way:
   ```

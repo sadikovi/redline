@@ -79,6 +79,48 @@ class CliTest(ServerTestCase):
         self.assertTrue(os.path.exists(os.path.join(self.repo.dir, ".git", "local-review", "archive", rid + ".json")))
 
 
+class StopEndTest(ServerTestCase):
+    def background_wait(self):
+        proc = subprocess.Popen([sys.executable, SCRIPT, "wait", "--timeout", "30"], cwd=self.repo.dir,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(1.0)
+        self.assertIsNone(proc.poll())
+        return proc
+
+    def test_wait_reports_stopped_and_server_stays_down(self):
+        proc = self.background_wait()
+        pid = self.repo.server_info()["pid"]
+        self.assertEqual(self.repo.cli("stop").stdout, "stopped\n")
+        out, _ = proc.communicate(timeout=10)
+        self.assertEqual((proc.returncode, out.decode()), (0, "STOPPED\n"))
+        time.sleep(0.5)
+        self.assertFalse(os.path.exists(os.path.join(self.repo.dir, ".git", "local-review", "server.json")))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+        # Paused, not ended: the next start resumes.
+        self.assertRegex(self.repo.cli("start", "--no-open").stdout, r"^resumed ")
+
+    def test_wait_reports_ended(self):
+        proc = self.background_wait()
+        self.repo.cli("end")
+        out, _ = proc.communicate(timeout=10)
+        self.assertEqual(out.decode(), "ENDED\n")
+
+    def test_wait_reports_ended_on_new(self):
+        proc = self.background_wait()
+        self.assertRegex(self.repo.cli("start", "--no-open", "--new").stdout, r"^review ")
+        out, _ = proc.communicate(timeout=10)
+        self.assertEqual(out.decode(), "ENDED\n")
+
+    def test_open_url(self):
+        rid = self.start_line.split()[1]
+        # `open` launches a browser; check the endpoint behind it instead.
+        status, body = self.repo.http("GET", "/api/url")
+        self.assertEqual((status, body), (200, "%s %s" % (rid, self.start_line.split()[-1])))
+        self.repo.cli("end")
+        self.assertEqual(self.repo.http("GET", "/api/url")[0], 404)
+
+
 class SecurityTest(ServerTestCase):
     def test_token_required(self):
         self.assertEqual(self.repo.http("GET", "/api/review", token=False)[0], 401)

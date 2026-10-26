@@ -29,8 +29,13 @@ To type `review` by hand, optionally symlink it: `ln -s "$PWD/review" ~/.local/b
 In Claude Code, after Claude has made some changes:
 
 ```
-/local-review            # review uncommitted changes against HEAD
+/local-review            # review uncommitted changes against HEAD (or resume the current review)
 /local-review main       # review the whole branch since main, plus uncommitted work
+/local-review new [ref]  # discard the unfinished review and start a fresh one
+/local-review status     # one-line state
+/local-review open       # reopen the review page (fresh URL after a server restart)
+/local-review pause      # stop the server and Claude's wait; /local-review resumes later
+/local-review stop       # end the review (archive it, delete its refs) and stop the server
 ```
 
 Comment on lines in the browser (click the blue **+**, drag or shift-click for ranges),
@@ -45,10 +50,11 @@ Keyboard: `j`/`k` next/previous file, `n` next open thread, `v` toggle viewed.
 | Command | Purpose |
 |---|---|
 | `review start [<ref>] [--title T] [--no-open] [--new]` | Start (or resume) a review and open the page |
-| `review wait [--timeout S]` | Block until the reviewer submits (exit 2 on timeout) |
+| `review wait [--timeout S]` | Block until the reviewer submits (exit 2 on timeout); prints `STOPPED`/`ENDED` if the server is stopped or the review ended |
 | `review push` | Read `#<id> resolve: …` / `#<id> reply: …` lines from stdin; snapshot the next round |
 | `review commit` | After "Approve and commit": commit the approved snapshot with the message from stdin |
 | `review status` | One-line state |
+| `review open` | Open the current review page in the browser |
 | `review end` | Archive the review and delete its refs |
 | `review stop` | Stop the server |
 | `review serve` | Run the server in the foreground (debugging) |
