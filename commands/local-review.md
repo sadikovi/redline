@@ -1,9 +1,9 @@
 ---
 description: GitHub-style local review of current changes; iterate until approved
 argument-hint: "[<base-ref> | new [<base-ref>] | status | open | pause | stop]"
-allowed-tools: Bash(python3 /Users/ivansadikov/Developer/local-review/review:*), Bash(git log:*), Bash(git diff:*), Bash(git status:*)
+allowed-tools: Bash(node /Users/ivansadikov/Developer/local-review/bin/review.js:*), Bash(git log:*), Bash(git diff:*), Bash(git status:*)
 ---
-`REVIEW` below stands for `python3 /Users/ivansadikov/Developer/local-review/review`. Always run it with that full command.
+`REVIEW` below stands for `node /Users/ivansadikov/Developer/local-review/bin/review.js`. Always run it with that full command.
 
 Arguments: `$ARGUMENTS`. Act on the first word:
 

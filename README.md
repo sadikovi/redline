@@ -5,7 +5,7 @@ A local, GitHub-style code review loop for Claude Code. Claude makes changes, op
 comments, pushes a new round, and repeats until you approve. You commit, or choose
 **Approve and commit** and Claude commits the approved changes for you.
 
-- Python 3.9+ standard library only; plain HTML/CSS/JS UI. No build step, no dependencies.
+- Node.js 22+ with a handful of npm packages (Express, Commander); plain HTML/CSS/JS UI, no build step.
 - Never commits, stages or touches your index unless you choose **Approve and commit**.
   Snapshots use a temporary index and `refs/local-review/*`, which are cleaned up automatically.
 - Binds to `127.0.0.1` only, with a per-server token, `Host`/`Origin` checks and a strict CSP.
@@ -15,14 +15,15 @@ See [`local-review-spec.md`](local-review-spec.md) for the full design.
 ## Install
 
 ```sh
+npm install
 mkdir -p ~/.claude/commands
 cp commands/local-review.md ~/.claude/commands/
 ```
 
-The slash command runs the script as `python3 /Users/ivansadikov/Developer/local-review/review`,
+The slash command runs the CLI as `node /Users/ivansadikov/Developer/local-review/bin/review.js`,
 so nothing needs to be on `PATH`. If you clone the repo elsewhere, update that path in
 `commands/local-review.md` (both the `allowed-tools` line and the `REVIEW` definition).
-To type `review` by hand, optionally symlink it: `ln -s "$PWD/review" ~/.local/bin/review`.
+To type `review` by hand, put it on `PATH` with `npm link`.
 
 ## Use
 
@@ -57,7 +58,11 @@ Keyboard: `j`/`k` next/previous file, `n` next open thread, `v` toggle viewed.
 | `review open` | Open the current review page in the browser |
 | `review end` | Archive the review and delete its refs |
 | `review stop` | Stop the server |
-| `review serve` | Run the server in the foreground (debugging) |
+| `review serve` | Run the server in the foreground (debugging); `npm start` does the same |
+
+`npm start` runs the server in the foreground for the repository you run it from (the
+local-review checkout itself, or any repo via `npm --prefix /path/to/local-review start`).
+Other `review` commands use that server while it runs; Ctrl-C stops it.
 
 State lives in `<git-dir>/local-review/`. Server errors are logged to `server.log` there.
 
@@ -93,5 +98,5 @@ On success the review is archived and the page shows `Approved · committed <sha
 ## Tests
 
 ```sh
-python3 -m unittest discover -s tests
+npm test
 ```

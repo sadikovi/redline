@@ -8,7 +8,7 @@ A local, GitHub-style code review loop for Claude Code. Claude makes changes, op
 
 - A GitHub "Files changed" style UI for the working-tree changes: file list with added/modified/deleted/renamed status, unified diff, line and range comments, threaded replies, "Request changes" and "Approve".
 - A review loop driven from a single Claude Code slash command, with Claude notified when the reviewer submits (no polling from Claude's side).
-- **Zero third-party dependencies.** Python 3.9+ standard library for the server and CLI; plain HTML, CSS and JavaScript for the UI. No build step, no CDN, no npm, no pip.
+- **Few, well-known dependencies.** Node.js 22+ with Express (HTTP), Commander (CLI), proper-lockfile, write-file-atomic and open; plain HTML, CSS and JavaScript for the UI. No build step, no CDN.
 - **Minimal token use.** Every CLI output Claude reads is compact plain text, designed so Claude never has to read the diff through the tool (it already knows what it changed).
 - Local only, safe against other processes and web pages on the same machine.
 
@@ -35,7 +35,15 @@ A local, GitHub-style code review loop for Claude Code. Claude makes changes, op
 
 ```
 local-review/
-  review              # executable Python script: CLI + server (stdlib only)
+  bin/review.js       # CLI entry point (commander)
+  src/
+    core.js           # review state and logic (the single source of truth)
+    diff.js           # `git diff` parser, anchors
+    format.js         # `review wait` / `review push` text formats
+    git.js            # repository locations, git runner
+    server.js         # Express app and `serve`
+    client.js         # HTTP client, detached server start
+    util.js           # errors, atomic JSON files
   ui/
     index.html
     app.js
@@ -43,12 +51,13 @@ local-review/
   commands/
     local-review.md   # Claude Code slash command (copy to ~/.claude/commands/)
   tests/
-    test_*.py         # unittest, stdlib only
+    *.test.js         # node:test
+  package.json        # dependencies; `npm start` (foreground server), `npm test`
   README.md
 ```
 
-- `review` is one Python file with a `#!/usr/bin/env python3` shebang. The user symlinks it onto `PATH`.
-- The server and CLI are the same script. `review serve` runs the HTTP server; every other subcommand is a thin HTTP client to it.
+- ES modules. `bin/review.js` is the `review` command (`npm link` puts it on `PATH`).
+- The server and CLI are the same program. `review serve` runs the HTTP server; every other subcommand is a thin HTTP client to it.
 - The server is the single source of truth. The CLI never edits state files directly, so the UI and Claude never disagree.
 - One server per repository (per `git rev-parse --git-dir`, so worktrees get separate servers).
 
@@ -63,7 +72,7 @@ All state lives in `<git-dir>/local-review/`, so git never tracks it and nothing
 | `index.tmp` | Temporary index used for snapshots |
 | `archive/<id>.json` | Finished reviews |
 
-Writes are atomic: write to a temp file, `fsync`, `os.replace`. All mutations go through one lock in the server.
+Writes are atomic (write-file-atomic: temp file, `fsync`, rename). All mutations run synchronously on the server's event loop, one at a time.
 
 ## 4. Snapshots and diffs
 
@@ -250,17 +259,17 @@ TIMEOUT
 
 ## 8. HTTP server
 
-`http.server.ThreadingHTTPServer`, bound to `127.0.0.1` on a free port chosen by the OS. Static files from `ui/`; JSON API under `/api/`.
+An Express app, bound to `127.0.0.1` on a free port chosen by the OS. Static files from `ui/`; JSON API under `/api/`.
 
 ### Security (must have)
 
-- Random 32-byte token (`secrets.token_urlsafe`), stored in `server.json` with mode `0600`.
+- Random 32-byte token (`crypto.randomBytes(32)`, base64url), stored in `server.json` with mode `0600`.
 - The browser receives the token in the URL fragment (`#t=...`), so it never appears in server logs or `Referer`. `app.js` reads it, stores it in `sessionStorage`, and sends it as `Authorization: Bearer <token>` on every API call.
-- Reject any `/api/` request without the correct token (constant-time compare via `hmac.compare_digest`).
+- Reject any `/api/` request without the correct token (constant-time compare via `crypto.timingSafeEqual`).
 - Reject requests whose `Host` header is not `127.0.0.1:<port>` or `localhost:<port>` (blocks DNS rebinding).
 - For state-changing requests, require `Origin` to be absent or exactly `http://127.0.0.1:<port>` / `http://localhost:<port>`.
 - Accept only `Content-Type: application/json` on POST.
-- All git calls via `subprocess.run([...])` with an argument list, never `shell=True`. Validate refs with `git rev-parse --verify --end-of-options <ref>^{commit}`. Validate paths against the parsed diff's file list before use.
+- All git calls via `child_process.spawnSync("git", [...])` with an argument list, never a shell. Validate refs with `git rev-parse --verify --end-of-options <ref>^{commit}`. Validate paths against the parsed diff's file list before use.
 - The UI renders every user-, file- and Claude-supplied string with `textContent`, never `innerHTML`.
 - The server never makes outbound network requests.
 
@@ -279,7 +288,7 @@ TIMEOUT
 | `GET /api/wait?timeout=S` | Used by `review wait`; returns the formatted text from section 7 |
 | `POST /api/push` | Used by `review push`; body is the raw stdin text |
 
-The server keeps a monotonically increasing `version`; every mutation bumps it and wakes long-pollers (`threading.Condition`).
+The server keeps a monotonically increasing `version`; every mutation bumps it and wakes long-pollers. Git runs synchronously, so every operation is atomic on the event loop; only the long-polls (`wait`, `events`) yield.
 
 ### Lifetime
 
@@ -363,7 +372,7 @@ Replace the background instruction with: run `review wait --timeout 590` in the 
 
 ## 12. Testing
 
-Stdlib `unittest` only. Each test creates a throwaway repository in a temp directory.
+Built-in `node:test` only (`npm test`, i.e. `node --test`). Each test creates a throwaway repository in a temp directory.
 
 - Snapshot: untracked files included, ignored files excluded, user's real index unchanged (compare `git ls-files -s` before and after).
 - Diff parser: add, modify, delete, rename, binary, no-newline-at-end, empty file.
@@ -383,4 +392,4 @@ Stdlib `unittest` only. Each test creates a throwaway repository in a temp direc
 4. "Changes since round 1" shows only what Claude changed in response.
 5. Approve ends the loop; nothing was committed, staged or added to the user's index.
 6. A typical round costs Claude one `wait` result and one `push` call; `wait` output for a two-comment review is under 120 tokens.
-7. The project has no dependencies outside the Python standard library and runs with `python3` 3.9+ on macOS and Linux.
+7. The project runs with `node` 22+ on macOS and Linux after `npm install`, with only the dependencies listed in section 1.

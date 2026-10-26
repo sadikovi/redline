@@ -1,0 +1,25 @@
+{
+  "name": "local-review",
+  "version": "1.0.0",
+  "description": "A local, GitHub-style code review loop for Claude Code",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "bin": {
+    "review": "bin/review.js"
+  },
+  "engines": {
+    "node": ">=22.22.2"
+  },
+  "scripts": {
+    "start": "cd \"$INIT_CWD\" && node \"$OLDPWD/bin/review.js\" serve",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "commander": "^15.0.0",
+    "express": "^5.3.0",
+    "open": "^11.0.4",
+    "proper-lockfile": "^4.1.2",
+    "write-file-atomic": "^8.0.0"
+  }
+}
