@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local review</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header id="sticky">
+  <div class="topbar">
+    <button id="toggle-sidebar" class="btn btn-icon" type="button" title="Toggle file tree" aria-label="Toggle file tree">&#9776;</button>
+    <div class="title-block">
+      <h1 id="title">Local review</h1>
+      <div class="meta"><span id="base"></span></div>
+    </div>
+    <select id="round-select" aria-label="Round"></select>
+    <select id="view-select" aria-label="View"></select>
+    <span id="counts" class="counts"></span>
+    <span class="spacer"></span>
+    <div class="finish-wrap">
+      <button id="finish-btn" class="btn btn-primary" type="button" aria-haspopup="dialog">
+        Finish your review <span id="draft-count" class="counter" hidden></span> <span class="caret">&#9662;</span>
+      </button>
+      <div id="finish-pop" class="popover" role="dialog" aria-label="Finish your review" hidden>
+        <h2>Finish your review</h2>
+        <textarea id="summary" rows="5" placeholder="Leave a comment"></textarea>
+        <label class="radio">
+          <input type="radio" name="verdict" value="request_changes" checked>
+          <span><strong>Request changes</strong><br><span class="muted">Submit feedback that Claude must address.</span></span>
+        </label>
+        <label class="radio">
+          <input type="radio" name="verdict" value="approve">
+          <span><strong>Approve</strong><br><span class="muted">Approve these changes. You commit them yourself.</span></span>
+        </label>
+        <div id="finish-error" class="form-error" hidden></div>
+        <div class="actions"><button id="submit-review" class="btn btn-primary" type="button">Submit review</button></div>
+      </div>
+    </div>
+  </div>
+  <div id="banners"></div>
+</header>
+<div class="layout">
+  <nav id="sidebar" aria-label="Changed files">
+    <input id="filter" type="search" placeholder="Filter changed files" autocomplete="off">
+    <div id="tree"></div>
+  </nav>
+  <div id="resizer" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+  <main id="main"></main>
+</div>
+</body>
+</html>

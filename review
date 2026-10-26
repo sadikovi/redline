@@ -1,0 +1,1216 @@
+#!/usr/bin/env python3
+"""local-review: a local, GitHub-style code review loop for Claude Code.
+
+One file, standard library only. `review serve` runs the HTTP server; every
+other subcommand is a thin HTTP client to it. The server is the single source
+of truth for review state.
+"""
+
+import argparse
+import copy
+import datetime
+import fcntl
+import glob
+import hmac
+import http.client
+import http.server
+import json
+import os
+import re
+import secrets
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.parse
+import webbrowser
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+UI_DIR = os.path.join(HERE, "ui")
+SCRIPT = os.path.realpath(__file__)
+
+STATIC = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/app.css": ("app.css", "text/css; charset=utf-8"),
+}
+CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+       "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+
+DEFAULT_WAIT = 1800
+EVENTS_TIMEOUT = 25
+IDLE_SHUTDOWN = 2 * 3600
+ARCHIVE_MAX_AGE = 30 * 86400
+SNIPPET_LINES = 2
+SNIPPET_WIDTH = 100
+MAX_REQUEST = 4 << 20
+MAX_COMMENT = 65536
+REF_PREFIX = "refs/local-review/"
+IDENTITY = {
+    "GIT_AUTHOR_NAME": "local-review", "GIT_AUTHOR_EMAIL": "local-review@localhost",
+    "GIT_COMMITTER_NAME": "local-review", "GIT_COMMITTER_EMAIL": "local-review@localhost",
+}
+
+PENDING, CHANGES, APPROVED = "pending_review", "changes_requested", "approved"
+
+
+class ReviewError(Exception):
+    def __init__(self, message, code=400):
+        super().__init__(message)
+        self.code = code
+
+
+def now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def atomic_write(path, data):
+    """Write bytes via temp file + fsync + rename. mkstemp creates files 0600."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def write_json(path, obj):
+    atomic_write(path, json.dumps(obj, indent=1, ensure_ascii=False).encode("utf-8"))
+
+
+def read_json(path):
+    try:
+        with open(path, "rb") as f:
+            return json.loads(f.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# git
+
+
+class Repo:
+    """Locations for the repository containing `cwd`."""
+
+    def __init__(self, cwd=None):
+        cwd = os.path.abspath(cwd or os.getcwd())
+        p = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"],
+            cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        lines = p.stdout.decode("utf-8", "replace").splitlines()
+        if p.returncode != 0 or len(lines) < 3:
+            raise ReviewError("not inside a git work tree")
+        self.top = lines[0]
+        self.git_dir = lines[1]
+        self.common_dir = os.path.normpath(os.path.join(cwd, lines[2]))
+        self.state_dir = os.path.join(self.git_dir, "local-review")
+
+
+class Git:
+    def __init__(self, cwd):
+        self.cwd = cwd
+
+    def run(self, *args, env=None, input=None, check=True):
+        full_env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+        if env:
+            full_env.update(env)
+        p = subprocess.run(["git"] + list(args), cwd=self.cwd, env=full_env, input=input,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if check and p.returncode != 0:
+            err = p.stderr.decode("utf-8", "replace").strip().splitlines()
+            raise ReviewError("git failed: %s" % (err[-1] if err else " ".join(args)), 500)
+        return p
+
+    def out(self, *args, **kw):
+        return self.run(*args, **kw).stdout.decode("utf-8", "replace").strip()
+
+    def verify_commit(self, ref):
+        p = self.run("rev-parse", "--verify", "--quiet", "--end-of-options", ref + "^{commit}",
+                     check=False)
+        sha = p.stdout.decode().strip()
+        if p.returncode != 0 or not sha:
+            raise ReviewError("unknown ref: %s" % ref)
+        return sha
+
+
+# ---------------------------------------------------------------------------
+# diff parsing
+
+HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$")
+C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+
+
+def parse_quoted(s, i=0):
+    """Parse a C-quoted git path starting at s[i] == '"'. Returns (value, next index)."""
+    out = bytearray()
+    i += 1
+    while i < len(s):
+        ch = s[i]
+        if ch == '"':
+            return out.decode("utf-8", "replace"), i + 1
+        if ch == "\\" and i + 1 < len(s):
+            nxt = s[i + 1]
+            if nxt in C_ESCAPES:
+                out.append(C_ESCAPES[nxt])
+                i += 2
+            elif nxt in "01234567":
+                out.append(int(s[i + 1:i + 4], 8) & 0xFF)
+                i += 4
+            else:
+                out.extend(nxt.encode("utf-8"))
+                i += 2
+        else:
+            out.extend(ch.encode("utf-8"))
+            i += 1
+    return out.decode("utf-8", "replace"), i
+
+
+def header_path(s):
+    """A path from a `---`/`+++`/`rename` header line, without quoting."""
+    if s.startswith('"'):
+        return parse_quoted(s)[0]
+    # git appends a tab to unquoted names containing spaces
+    return s[:-1] if s.endswith("\t") else s
+
+
+def strip_prefix(p, prefix):
+    return p[len(prefix):] if p.startswith(prefix) else p
+
+
+def split_git_header(rest):
+    """Split the 'a/X b/Y' part of a `diff --git` line."""
+    if rest.startswith('"'):
+        a, i = parse_quoted(rest)
+        b = rest[i + 1:]
+        return a, header_path(b)
+    if rest.endswith('"'):
+        j = rest.rfind(' "')
+        return rest[:j], parse_quoted(rest, j + 1)[0]
+    # Unquoted: without a rename both names have the same length.
+    n = (len(rest) - 1) // 2
+    return rest[:n], rest[n + 1:]
+
+
+def parse_diff(text):
+    """Parse `git diff` output into the JSON shape used by the UI."""
+    lines = text.split("\n")
+    files = []
+    i = 0
+    while i < len(lines):
+        if not lines[i].startswith("diff --git "):
+            i += 1
+            continue
+        a, b = split_git_header(lines[i][len("diff --git "):])
+        old_path, new_path = strip_prefix(a, "a/"), strip_prefix(b, "b/")
+        f = {"path": None, "oldPath": None, "status": "M", "binary": False,
+             "additions": 0, "deletions": 0, "hunks": []}
+        i += 1
+        while i < len(lines) and not lines[i].startswith(("@@", "diff --git ")):
+            hl = lines[i]
+            if hl.startswith("new file mode "):
+                f["status"], f["newMode"] = "A", hl[14:]
+            elif hl.startswith("deleted file mode "):
+                f["status"], f["oldMode"] = "D", hl[18:]
+            elif hl.startswith("old mode "):
+                f["oldMode"] = hl[9:]
+            elif hl.startswith("new mode "):
+                f["newMode"] = hl[9:]
+            elif hl.startswith("rename from "):
+                f["status"], old_path = "R", header_path(hl[12:])
+            elif hl.startswith("rename to "):
+                new_path = header_path(hl[10:])
+            elif hl.startswith("Binary files ") or hl == "GIT binary patch":
+                f["binary"] = True
+            elif hl.startswith("--- "):
+                p = header_path(hl[4:])
+                if p != "/dev/null":
+                    old_path = strip_prefix(p, "a/")
+            elif hl.startswith("+++ "):
+                p = header_path(hl[4:])
+                if p != "/dev/null":
+                    new_path = strip_prefix(p, "b/")
+            i += 1
+        while i < len(lines) and lines[i].startswith("@@"):
+            m = HUNK_RE.match(lines[i])
+            if not m:
+                break
+            old_no, new_no = int(m.group(1)), int(m.group(3))
+            rem_old = int(m.group(2)) if m.group(2) is not None else 1
+            rem_new = int(m.group(4)) if m.group(4) is not None else 1
+            hunk = {"header": lines[i], "lines": []}
+            i += 1
+            while i < len(lines) and (rem_old > 0 or rem_new > 0 or lines[i].startswith("\\")):
+                line = lines[i]
+                kind = line[:1]
+                if kind == "\\":
+                    if hunk["lines"]:
+                        hunk["lines"][-1]["noeol"] = True
+                elif kind == "+":
+                    hunk["lines"].append({"type": "add", "old": None, "new": new_no, "text": line[1:]})
+                    new_no += 1
+                    rem_new -= 1
+                    f["additions"] += 1
+                elif kind == "-":
+                    hunk["lines"].append({"type": "del", "old": old_no, "new": None, "text": line[1:]})
+                    old_no += 1
+                    rem_old -= 1
+                    f["deletions"] += 1
+                elif kind == " " or line == "":
+                    hunk["lines"].append({"type": "ctx", "old": old_no, "new": new_no, "text": line[1:]})
+                    old_no += 1
+                    new_no += 1
+                    rem_old -= 1
+                    rem_new -= 1
+                else:
+                    break
+                i += 1
+            f["hunks"].append(hunk)
+        if f["status"] == "D":
+            f["path"], f["oldPath"] = old_path, old_path
+        elif f["status"] == "A":
+            f["path"] = new_path
+        else:
+            f["path"], f["oldPath"] = new_path, old_path
+        files.append(f)
+    return files
+
+
+def collect_range(f, side, start, end):
+    """Anchor texts for lines start..end on `side` of one hunk, or None if invalid.
+
+    New side: context and added lines. Old side: deleted lines only.
+    """
+    if f is None or f.get("binary") or start < 1 or end < start:
+        return None
+    for hunk in f["hunks"]:
+        nums = {}
+        for line in hunk["lines"]:
+            if side == "new" and line["type"] != "del":
+                nums[line["new"]] = line["text"]
+            elif side == "old" and line["type"] == "del":
+                nums[line["old"]] = line["text"]
+        if start in nums:
+            if all(n in nums for n in range(start, end + 1)):
+                return [nums[n] for n in range(start, end + 1)]
+            return None
+    return None
+
+
+def find_anchor(lines, anchor, near):
+    """1-based start of the exact match of `anchor` in `lines` closest to `near`."""
+    if not anchor:
+        return None
+    k, first = len(anchor), anchor[0]
+    best = None
+    for i in range(len(lines) - k + 1):
+        if lines[i] == first and lines[i:i + k] == anchor:
+            if best is None or abs(i + 1 - near) < abs(best - near):
+                best = i + 1
+    return best
+
+
+# ---------------------------------------------------------------------------
+# `review wait` / `review push` text formats
+
+
+def thread_entries(c):
+    return [e for e in c["thread"] if not e.get("draft")]
+
+
+def attention(r):
+    """Submitted threads needing Claude: [(comment, is_followup, user messages)]."""
+    n = len(r["rounds"])
+    out = []
+    for c in sorted(r["comments"], key=lambda c: c["id"]):
+        if c["state"] == "draft":
+            continue
+        thread = thread_entries(c)
+        last_claude = max((i for i, e in enumerate(thread) if e["author"] == "claude"), default=-1)
+        pending = [e for e in thread[last_claude + 1:] if e["author"] == "user"]
+        if not pending:
+            continue
+        if c["state"] != "open" and not any(e.get("round") == n for e in pending):
+            continue
+        out.append((c, last_claude >= 0, pending))
+    return out
+
+
+def format_location(c):
+    sign = "+" if c["side"] == "new" else "-"
+    loc = "%s:%s%d" % (c["path"], sign, c["start"])
+    if c["end"] != c["start"]:
+        loc += "-%d" % c["end"]
+    return "#%d %s" % (c["id"], loc)
+
+
+def format_snippet(anchor):
+    out = []
+    for line in anchor[:SNIPPET_LINES]:
+        line = line.rstrip()
+        if len(line) > SNIPPET_WIDTH:
+            line = line[:SNIPPET_WIDTH - 1] + "…"
+        out.append(("> " + line).rstrip())
+    if len(anchor) > SNIPPET_LINES:
+        out.append("...(+%d)" % (len(anchor) - SNIPPET_LINES))
+    return out
+
+
+def format_wait(r):
+    n = len(r["rounds"])
+    items = attention(r)
+    if r["status"] == APPROVED:
+        out = ["APPROVED round=%d" % n]
+    else:
+        out = ["CHANGES_REQUESTED round=%d comments=%d" % (n, len(items))]
+    for c, followup, msgs in items:
+        out.append(format_location(c))
+        if followup:
+            out.extend("(follow-up) " + m["body"].rstrip() for m in msgs)
+        else:
+            out.extend(format_snippet(c["anchor"]))
+            out.extend(m["body"].rstrip() for m in msgs)
+    for s in r.get("summaries", []):
+        if s["round"] == n:
+            out.append("SUMMARY: " + s["body"].rstrip())
+    return "\n".join(out)
+
+
+PUSH_RE = re.compile(r"^#(\d+)\s+(resolve|reply)\b\s*(?::\s*(.*))?$")
+
+
+def parse_push(text):
+    """Parse push input into [(id, action, message or None)]."""
+    entries = []
+    for no, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line:
+            continue
+        m = PUSH_RE.match(line)
+        if not m:
+            raise ReviewError("line %d: expected '#<id> resolve|reply: <message>'" % no)
+        msg = (m.group(3) or "").strip() or None
+        if m.group(2) == "reply" and not msg:
+            raise ReviewError("line %d: reply needs a message" % no)
+        entries.append((int(m.group(1)), m.group(2), msg))
+    return entries
+
+
+# ---------------------------------------------------------------------------
+# review state
+
+
+class Core:
+    """All review state and logic. Every mutation holds `cond` and bumps `version`."""
+
+    def __init__(self, repo):
+        self.repo = repo
+        self.git = Git(repo.top)
+        self.state_dir = repo.state_dir
+        self.archive_dir = os.path.join(self.state_dir, "archive")
+        os.makedirs(self.archive_dir, mode=0o700, exist_ok=True)
+        self.review_path = os.path.join(self.state_dir, "review.json")
+        self.cond = threading.Condition(threading.RLock())
+        self.version = 1
+        self.closing = False
+        self.url = ""
+        self.last_request = time.time()
+        self._diff_cache = {}
+        self.review = read_json(self.review_path)
+
+    # -- persistence
+
+    def _commit(self, r):
+        if r is None:
+            try:
+                os.unlink(self.review_path)
+            except FileNotFoundError:
+                pass
+        else:
+            write_json(self.review_path, r)
+        self.review = r
+        self._bump()
+
+    def _bump(self):
+        self.version += 1
+        self.cond.notify_all()
+
+    def close(self):
+        with self.cond:
+            self.closing = True
+            self.cond.notify_all()
+
+    def _require(self, status=None):
+        r = self.review
+        if r is None:
+            raise ReviewError("no active review", 404)
+        if status and r["status"] != status:
+            raise ReviewError("review is %s" % r["status"], 409)
+        return copy.deepcopy(r)
+
+    # -- git
+
+    def _snapshot(self, rid, n, base):
+        idx = os.path.join(self.state_dir, "index.tmp")
+        try:
+            os.unlink(idx)
+        except FileNotFoundError:
+            pass
+        env = {"GIT_INDEX_FILE": idx}
+        self.git.run("read-tree", "HEAD", env=env)
+        self.git.run("add", "-A", env=env)
+        tree = self.git.out("write-tree", env=env)
+        commit = self.git.out("commit-tree", "--no-gpg-sign", tree, "-p", base,
+                              "-m", "local-review %s round %d" % (rid, n), env=IDENTITY)
+        self.git.run("update-ref", "%s%s/round-%d" % (REF_PREFIX, rid, n), commit)
+        return commit, tree
+
+    def _diff(self, a, b):
+        key = (a, b)
+        if key not in self._diff_cache:
+            p = self.git.run("-c", "core.quotePath=false", "-c", "diff.relative=false",
+                             "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                             "--submodule=short", "--find-renames", "-U3",
+                             "--src-prefix=a/", "--dst-prefix=b/", a, b, "--")
+            if len(self._diff_cache) > 32:
+                self._diff_cache.clear()
+            self._diff_cache[key] = parse_diff(p.stdout.decode("utf-8", "replace"))
+        return self._diff_cache[key]
+
+    def _file_lines(self, commit, path):
+        p = self.git.run("cat-file", "blob", "%s:%s" % (commit, path), check=False)
+        if p.returncode != 0:
+            return None
+        lines = p.stdout.decode("utf-8", "replace").split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        return lines
+
+    def _refs(self, rid=None):
+        out = self.git.out("for-each-ref", "--format=%(refname)",
+                           REF_PREFIX + (rid + "/" if rid else ""))
+        return [x for x in out.splitlines() if x]
+
+    def _delete_refs(self, refs):
+        if refs:
+            self.git.run("update-ref", "--stdin",
+                         input="".join("delete %s\n" % r for r in refs).encode())
+
+    def _active_ids(self):
+        """Ids of unfinished reviews in this and every other worktree (refs are shared)."""
+        ids = {self.review["id"]} if self.review else set()
+        paths = [os.path.join(self.repo.common_dir, "local-review", "review.json")]
+        paths += glob.glob(os.path.join(self.repo.common_dir, "worktrees", "*",
+                                        "local-review", "review.json"))
+        for p in paths:
+            other = read_json(p)
+            if isinstance(other, dict) and other.get("id"):
+                ids.add(other["id"])
+        return ids
+
+    def _cleanup(self):
+        keep = self._active_ids()
+        self._delete_refs([r for r in self._refs() if r[len(REF_PREFIX):].split("/")[0] not in keep])
+        cutoff = time.time() - ARCHIVE_MAX_AGE
+        for p in glob.glob(os.path.join(self.archive_dir, "*.json")):
+            try:
+                if os.path.getmtime(p) < cutoff:
+                    os.unlink(p)
+            except OSError:
+                pass
+
+    def _archive(self, r):
+        r = dict(r, archivedAt=now_iso())
+        write_json(os.path.join(self.archive_dir, r["id"] + ".json"), r)
+        self._delete_refs(self._refs(r["id"]))
+        self._commit(None)
+
+    # -- CLI operations
+
+    def start(self, ref=None, title=None, new=False):
+        with self.cond:
+            self._cleanup()
+            r = self.review
+            if r and (new or r["status"] == APPROVED):
+                self._archive(r)
+                r = None
+            if r:
+                n = len(r["rounds"])
+                if r["status"] == CHANGES and r["consumed"] >= n:
+                    # The previous session received the comments but never pushed.
+                    r = copy.deepcopy(r)
+                    r["consumed"] = n - 1
+                    self._commit(r)
+                line = "resumed %s round %d %s" % (r["id"], n, r["status"])
+                if r["status"] == CHANGES:
+                    line += " comments=%d" % len(attention(r))
+                return line + " " + self.url
+            head = self.git.run("rev-parse", "--verify", "--quiet", "HEAD^{commit}", check=False)
+            if head.returncode != 0:
+                raise ReviewError("repository has no commits")
+            base = head.stdout.decode().strip()
+            if ref:
+                base = self.git.out("merge-base", base, self.git.verify_commit(ref))
+            rid = secrets.token_hex(3)
+            while self._refs(rid):
+                rid = secrets.token_hex(3)
+            commit, tree = self._snapshot(rid, 1, base)
+            if tree == self.git.out("rev-parse", base + "^{tree}"):
+                self._delete_refs(self._refs(rid))
+                raise ReviewError("no changes to review")
+            branch = self.git.run("symbolic-ref", "--short", "-q", "HEAD", check=False)
+            r = {
+                "id": rid,
+                "title": title or "",
+                "branch": branch.stdout.decode().strip(),
+                "base": base,
+                "status": PENDING,
+                "rounds": [{"n": 1, "commit": commit, "createdAt": now_iso()}],
+                "consumed": 0,
+                "nextCommentId": 1,
+                "comments": [],
+                "summaries": [],
+                "createdAt": now_iso(),
+            }
+            self._commit(r)
+            return "review %s round 1 %s" % (rid, self.url)
+
+    def status(self):
+        with self.cond:
+            r = self._require()
+            open_count = sum(1 for c in r["comments"] if c["state"] == "open")
+            return "%s round %d %s open=%d" % (r["id"], len(r["rounds"]), r["status"], open_count)
+
+    def end(self):
+        with self.cond:
+            r = self._require()
+            self._archive(r)
+            return "ended %s" % r["id"]
+
+    def wait(self, timeout):
+        deadline = time.monotonic() + timeout
+        with self.cond:
+            while True:
+                r = self._require()
+                n = len(r["rounds"])
+                if r["status"] in (CHANGES, APPROVED) and r["consumed"] < n:
+                    text = format_wait(r)
+                    r["consumed"] = n
+                    self._commit(r)
+                    return text
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or self.closing:
+                    return "TIMEOUT"
+                self.cond.wait(remaining)
+
+    def push(self, text):
+        with self.cond:
+            r = self._require(CHANGES)
+            entries = parse_push(text)
+            by_id = {c["id"]: c for c in r["comments"] if c["state"] != "draft"}
+            for cid, _, _ in entries:
+                if cid not in by_id:
+                    raise ReviewError("unknown comment #%d" % cid)
+            needed = [c["id"] for c, _, _ in attention(r)]
+            n = len(r["rounds"]) + 1
+            for cid, action, msg in entries:
+                c = by_id[cid]
+                if msg:
+                    c["thread"].append({"author": "claude", "body": msg, "round": n, "at": now_iso()})
+                if action == "resolve" and c["state"] == "open":
+                    c["state"] = "resolved"
+                elif action == "reply" and c["state"] == "resolved":
+                    c["state"] = "open"
+            prev = r["rounds"][-1]["commit"]
+            commit, _ = self._snapshot(r["id"], n, r["base"])
+            r["rounds"].append({"n": n, "commit": commit, "createdAt": now_iso()})
+            self._relocate(r, prev, commit)
+            r["status"] = PENDING
+            self._commit(r)
+            mentioned = {cid for cid, _, _ in entries}
+            unanswered = [cid for cid in needed if cid not in mentioned]
+            line = "round %d ok" % n
+            if unanswered:
+                line += "; unanswered: " + " ".join("#%d" % cid for cid in unanswered)
+            return line
+
+    def _relocate(self, r, prev_commit, new_commit):
+        files = {f["path"]: f for f in self._diff(r["base"], new_commit)}
+        renames = {f["oldPath"]: f["path"] for f in self._diff(prev_commit, new_commit)
+                   if f["status"] == "R"}
+        for c in r["comments"]:
+            if c["state"] not in ("open", "resolved"):
+                continue
+            if c["side"] == "old":
+                # The base is fixed: the lines must still be shown as deleted.
+                if collect_range(files.get(c["path"]), "old", c["start"], c["end"]) != c["anchor"]:
+                    c["state"] = "outdated"
+                continue
+            path = renames.get(c["path"], c["path"])
+            lines = self._file_lines(new_commit, path)
+            start = find_anchor(lines, c["anchor"], c["start"]) if lines is not None else None
+            if start is None:
+                c["state"] = "outdated"
+                continue
+            end = start + len(c["anchor"]) - 1
+            if collect_range(files.get(path), "new", start, end) is None:
+                # Still in the file, but no longer visible in the diff.
+                c["state"] = "outdated"
+                continue
+            c["path"], c["start"], c["end"] = path, start, end
+
+    # -- UI operations
+
+    def payload(self):
+        with self.cond:
+            r = self._require()
+            return {"version": self.version, "review": r}
+
+    def events(self, version, timeout=EVENTS_TIMEOUT):
+        deadline = time.monotonic() + timeout
+        with self.cond:
+            while self.version == version and not self.closing:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.cond.wait(remaining)
+            return {"version": self.version}
+
+    def diff(self, round_no=None, since=None):
+        with self.cond:
+            r = self._require()
+            rounds = r["rounds"]
+        n = len(rounds) if round_no is None else round_no
+        if not 1 <= n <= len(rounds):
+            raise ReviewError("unknown round")
+        if since is not None and not 1 <= since < n:
+            raise ReviewError("invalid since round")
+        a = rounds[since - 1]["commit"] if since else r["base"]
+        files = self._diff(a, rounds[n - 1]["commit"])
+        return {"round": n, "since": since, "files": files}
+
+    def _latest_file(self, r, path):
+        for f in self._diff(r["base"], r["rounds"][-1]["commit"]):
+            if f["path"] == path:
+                return f
+        raise ReviewError("path is not in the diff")
+
+    def _find(self, r, cid):
+        for c in r["comments"]:
+            if c["id"] == cid:
+                return c
+        raise ReviewError("unknown comment", 404)
+
+    def add_comment(self, body):
+        path, side, start, end = body.get("path"), body.get("side"), body.get("start"), body.get("end")
+        text = check_body(body.get("body"))
+        if not isinstance(path, str) or side not in ("new", "old"):
+            raise ReviewError("invalid comment")
+        if not all(isinstance(x, int) and not isinstance(x, bool) for x in (start, end)):
+            raise ReviewError("invalid line range")
+        with self.cond:
+            r = self._require(PENDING)
+            anchor = collect_range(self._latest_file(r, path), side, start, end)
+            if anchor is None:
+                raise ReviewError("invalid line range")
+            n = len(r["rounds"])
+            c = {"id": r["nextCommentId"], "round": n, "path": path, "side": side,
+                 "start": start, "end": end, "anchor": anchor, "state": "draft",
+                 "thread": [{"author": "user", "body": text, "round": n, "at": now_iso()}]}
+            r["nextCommentId"] += 1
+            r["comments"].append(c)
+            self._commit(r)
+            return c
+
+    def edit_comment(self, cid, body):
+        with self.cond:
+            r = self._require(PENDING)
+            c = self._find(r, cid)
+            if "body" in body:
+                if c["state"] != "draft":
+                    raise ReviewError("only drafts can be edited", 409)
+                c["thread"][0]["body"] = check_body(body["body"])
+            if "state" in body:
+                if body["state"] not in ("open", "resolved") or c["state"] not in ("open", "resolved"):
+                    raise ReviewError("invalid state change", 409)
+                c["state"] = body["state"]
+            self._commit(r)
+            return c
+
+    def delete_comment(self, cid):
+        with self.cond:
+            r = self._require(PENDING)
+            c = self._find(r, cid)
+            if c["state"] != "draft":
+                raise ReviewError("only drafts can be deleted", 409)
+            r["comments"].remove(c)
+            self._commit(r)
+            return {"ok": True}
+
+    def add_reply(self, cid, body):
+        text = check_body(body.get("body"))
+        with self.cond:
+            r = self._require(PENDING)
+            c = self._find(r, cid)
+            if c["state"] == "draft":
+                raise ReviewError("cannot reply to a draft", 409)
+            c["thread"].append({"author": "user", "body": text, "round": len(r["rounds"]),
+                                "at": now_iso(), "draft": True})
+            self._commit(r)
+            return c
+
+    def _draft_reply(self, c, idx):
+        if not 0 < idx < len(c["thread"]) or not c["thread"][idx].get("draft"):
+            raise ReviewError("unknown draft reply", 404)
+        return c["thread"][idx]
+
+    def edit_reply(self, cid, idx, body):
+        with self.cond:
+            r = self._require(PENDING)
+            c = self._find(r, cid)
+            self._draft_reply(c, idx)["body"] = check_body(body.get("body"))
+            self._commit(r)
+            return c
+
+    def delete_reply(self, cid, idx):
+        with self.cond:
+            r = self._require(PENDING)
+            c = self._find(r, cid)
+            c["thread"].remove(self._draft_reply(c, idx))
+            self._commit(r)
+            return c
+
+    def submit(self, body):
+        verdict = body.get("verdict")
+        summary = body.get("summary") or ""
+        if verdict not in ("request_changes", "approve") or not isinstance(summary, str):
+            raise ReviewError("invalid verdict")
+        summary = summary.strip()
+        with self.cond:
+            r = self._require(PENDING)
+            n = len(r["rounds"])
+            for c in r["comments"]:
+                if c["state"] == "draft":
+                    c["state"] = "open"
+                    for e in c["thread"]:
+                        e["round"] = n
+                for e in c["thread"]:
+                    if e.pop("draft", False):
+                        e["round"] = n
+            if summary:
+                r["summaries"].append({"round": n, "body": summary})
+            if verdict == "request_changes" and not summary and not attention(r):
+                raise ReviewError("Request changes needs at least one comment or a summary")
+            r["status"] = CHANGES if verdict == "request_changes" else APPROVED
+            self._commit(r)
+            return {"status": r["status"]}
+
+
+def check_body(text):
+    if not isinstance(text, str) or not text.strip():
+        raise ReviewError("comment body is empty")
+    if len(text) > MAX_COMMENT:
+        raise ReviewError("comment is too long")
+    return text.rstrip()
+
+
+# ---------------------------------------------------------------------------
+# HTTP server
+
+COMMENT_RE = re.compile(r"^/api/comments/(\d+)$")
+REPLIES_RE = re.compile(r"^/api/comments/(\d+)/replies$")
+REPLY_RE = re.compile(r"^/api/comments/(\d+)/replies/(\d+)$")
+
+
+def query_int(q, name, default=None):
+    v = q.get(name, [None])[0]
+    if v in (None, ""):
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        raise ReviewError("invalid %s" % name)
+
+
+class Server(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, core):
+        super().__init__(("127.0.0.1", 0), Handler)
+        self.core = core
+        self.port = self.server_address[1]
+        self.token = secrets.token_urlsafe(32)
+        self.hosts = ("127.0.0.1:%d" % self.port, "localhost:%d" % self.port)
+        self.origins = tuple("http://" + h for h in self.hosts)
+        core.url = "http://127.0.0.1:%d/#t=%s" % (self.port, self.token)
+
+    def stop_soon(self):
+        self.core.close()
+        threading.Thread(target=self.shutdown, daemon=True).start()
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = "local-review"
+    sys_version = ""
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        self._handle("GET")
+
+    def do_POST(self):
+        self._handle("POST")
+
+    def do_PATCH(self):
+        self._handle("PATCH")
+
+    def do_DELETE(self):
+        self._handle("DELETE")
+
+    def _send(self, code, obj, ctype="application/json"):
+        data = obj if isinstance(obj, bytes) else (
+            obj.encode("utf-8") if isinstance(obj, str) else json.dumps(obj).encode("utf-8"))
+        self.send_response(code)
+        self.send_header("Content-Type", ctype if ctype != "text/plain" else "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _error(self, code, msg):
+        self._send(code, {"error": msg})
+
+    def _handle(self, method):
+        srv = self.server
+        if self.headers.get("Host", "") not in srv.hosts:
+            return self._error(403, "forbidden host")
+        url = urllib.parse.urlsplit(self.path)
+        if not url.path.startswith("/api/"):
+            return self._static(method, url.path)
+        auth = self.headers.get("Authorization", "").encode("utf-8", "replace")
+        if not hmac.compare_digest(auth, ("Bearer " + srv.token).encode()):
+            return self._error(401, "unauthorized")
+        srv.core.last_request = time.time()
+        if method != "GET":
+            origin = self.headers.get("Origin")
+            if origin is not None and origin not in srv.origins:
+                return self._error(403, "forbidden origin")
+        body = {}
+        if method in ("POST", "PATCH"):
+            ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                return self._error(415, "expected application/json")
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return self._error(400, "bad length")
+            if length > MAX_REQUEST:
+                return self._error(413, "request too large")
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except ValueError:
+                return self._error(400, "invalid JSON")
+            if not isinstance(body, dict):
+                return self._error(400, "expected an object")
+        try:
+            self._route(method, url.path, urllib.parse.parse_qs(url.query), body)
+        except ReviewError as e:
+            self._error(e.code, str(e))
+        except Exception as e:  # noqa: BLE001 - report, keep serving
+            self._error(500, "internal error: %s" % e)
+
+    def _route(self, method, path, q, body):
+        core = self.server.core
+        if method == "GET":
+            if path == "/api/ping":
+                return self._send(200, {"ok": True})
+            if path == "/api/review":
+                return self._send(200, core.payload())
+            if path == "/api/diff":
+                return self._send(200, core.diff(query_int(q, "round"), query_int(q, "since")))
+            if path == "/api/events":
+                return self._send(200, core.events(query_int(q, "version", 0)))
+            if path == "/api/wait":
+                timeout = min(max(query_int(q, "timeout", DEFAULT_WAIT), 0), 86400)
+                return self._send(200, core.wait(timeout), "text/plain")
+            if path == "/api/status":
+                return self._send(200, core.status(), "text/plain")
+        elif method == "POST":
+            if path == "/api/comments":
+                return self._send(200, core.add_comment(body))
+            m = REPLIES_RE.match(path)
+            if m:
+                return self._send(200, core.add_reply(int(m.group(1)), body))
+            if path == "/api/submit":
+                return self._send(200, core.submit(body))
+            if path == "/api/push":
+                text = body.get("text")
+                if not isinstance(text, str):
+                    raise ReviewError("missing text")
+                return self._send(200, core.push(text), "text/plain")
+            if path == "/api/start":
+                text = core.start(body.get("ref") or None, body.get("title") or None,
+                                  bool(body.get("new")))
+                return self._send(200, text, "text/plain")
+            if path == "/api/end":
+                return self._send(200, core.end(), "text/plain")
+            if path == "/api/shutdown":
+                self._send(200, "stopped", "text/plain")
+                return self.server.stop_soon()
+        elif method == "PATCH":
+            m = COMMENT_RE.match(path)
+            if m:
+                return self._send(200, core.edit_comment(int(m.group(1)), body))
+            m = REPLY_RE.match(path)
+            if m:
+                return self._send(200, core.edit_reply(int(m.group(1)), int(m.group(2)), body))
+        elif method == "DELETE":
+            m = COMMENT_RE.match(path)
+            if m:
+                return self._send(200, core.delete_comment(int(m.group(1))))
+            m = REPLY_RE.match(path)
+            if m:
+                return self._send(200, core.delete_reply(int(m.group(1)), int(m.group(2))))
+        raise ReviewError("not found", 404)
+
+    def _static(self, method, path):
+        if method != "GET":
+            return self._error(405, "method not allowed")
+        if path not in STATIC:
+            return self._error(404, "not found")
+        name, ctype = STATIC[path]
+        try:
+            with open(os.path.join(UI_DIR, name), "rb") as f:
+                data = f.read()
+        except OSError:
+            return self._error(404, "not found")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def serve(repo):
+    os.makedirs(repo.state_dir, mode=0o700, exist_ok=True)
+    core = Core(repo)
+    srv = Server(core)
+    info_path = os.path.join(repo.state_dir, "server.json")
+    write_json(info_path, {"pid": os.getpid(), "port": srv.port, "token": srv.token})
+    signal.signal(signal.SIGTERM, lambda *_: srv.stop_soon())
+    signal.signal(signal.SIGINT, lambda *_: srv.stop_soon())
+    stopped = threading.Event()
+
+    def idle_watch():
+        while not stopped.wait(60):
+            with core.cond:
+                busy = core.review is not None and core.review["status"] == PENDING
+            if not busy and time.time() - core.last_request > IDLE_SHUTDOWN:
+                srv.stop_soon()
+                return
+
+    threading.Thread(target=idle_watch, daemon=True).start()
+    try:
+        srv.serve_forever(poll_interval=0.5)
+    finally:
+        stopped.set()
+        core.close()
+        info = read_json(info_path)
+        if isinstance(info, dict) and info.get("pid") == os.getpid():
+            try:
+                os.unlink(info_path)
+            except OSError:
+                pass
+        srv.server_close()
+
+
+# ---------------------------------------------------------------------------
+# client
+
+
+def http_call(port, token, method, path, body=None, timeout=30):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        headers = {"Authorization": "Bearer " + token}
+        data = None
+        if method in ("POST", "PATCH"):
+            data = json.dumps(body or {}).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        conn.request(method, path, body=data, headers=headers)
+        resp = conn.getresponse()
+        return resp.status, resp.getheader("Content-Type", ""), resp.read()
+    finally:
+        conn.close()
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+class Client:
+    def __init__(self, repo):
+        self.repo = repo
+        self.info_path = os.path.join(repo.state_dir, "server.json")
+        self.info = None
+
+    def _responding(self, info):
+        if not isinstance(info, dict) or not pid_alive(info.get("pid", 0)):
+            return False
+        try:
+            status, _, _ = http_call(info["port"], info["token"], "GET", "/api/ping", timeout=3)
+        except (OSError, KeyError, http.client.HTTPException):
+            return False
+        return status == 200
+
+    def running(self):
+        info = read_json(self.info_path)
+        return info if self._responding(info) else None
+
+    def ensure(self):
+        """Return server info, starting a detached server if none is responding."""
+        os.makedirs(self.repo.state_dir, mode=0o700, exist_ok=True)
+        with open(os.path.join(self.repo.state_dir, "server.lock"), "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            info = self.running()
+            if info:
+                self.info = info
+                return info
+            log = open(os.path.join(self.repo.state_dir, "server.log"), "ab")
+            proc = subprocess.Popen([sys.executable, SCRIPT, "serve"], cwd=self.repo.top,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=log, start_new_session=True, close_fds=True)
+            log.close()
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                info = read_json(self.info_path)
+                if isinstance(info, dict) and info.get("pid") == proc.pid and self._responding(info):
+                    self.info = info
+                    return info
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.05)
+            raise ReviewError("server failed to start (see %s)"
+                              % os.path.join(self.repo.state_dir, "server.log"))
+
+    def call(self, method, path, body=None, timeout=60, retry=True):
+        info = self.info or self.ensure()
+        try:
+            status, ctype, raw = http_call(info["port"], info["token"], method, path, body, timeout)
+        except (OSError, http.client.HTTPException):
+            if not retry:
+                raise
+            self.info = None
+            info = self.ensure()
+            status, ctype, raw = http_call(info["port"], info["token"], method, path, body, timeout)
+        if ctype.startswith("application/json"):
+            data = json.loads(raw.decode("utf-8"))
+        else:
+            data = raw.decode("utf-8")
+        if status >= 400:
+            msg = data.get("error") if isinstance(data, dict) else data
+            raise ReviewError(msg or "HTTP %d" % status)
+        return data
+
+
+def cmd_wait(client, timeout):
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = max(0, int(deadline - time.monotonic()))
+        try:
+            return client.call("GET", "/api/wait?timeout=%d" % remaining,
+                               timeout=remaining + 30, retry=False)
+        except (OSError, http.client.HTTPException):
+            if time.monotonic() >= deadline:
+                return "TIMEOUT"
+            client.info = None
+            time.sleep(0.2)
+            client.ensure()
+
+
+def cmd_stop(client):
+    info = client.running()
+    if info:
+        try:
+            http_call(info["port"], info["token"], "POST", "/api/shutdown", {}, timeout=5)
+        except (OSError, http.client.HTTPException):
+            pass
+        deadline = time.monotonic() + 5
+        while pid_alive(info["pid"]) and time.monotonic() < deadline:
+            time.sleep(0.05)
+    return "stopped"
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="review", description="Local GitHub-style code review loop.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("start", help="start or resume a review")
+    p.add_argument("ref", nargs="?")
+    p.add_argument("--title")
+    p.add_argument("--no-open", action="store_true")
+    p.add_argument("--new", action="store_true")
+    p = sub.add_parser("wait", help="wait for the reviewer to submit")
+    p.add_argument("--timeout", type=int, default=DEFAULT_WAIT)
+    sub.add_parser("push", help="reply to comments (stdin) and push a new round")
+    sub.add_parser("status", help="show the current review")
+    sub.add_parser("end", help="archive the review and delete its refs")
+    sub.add_parser("serve", help="run the server in the foreground")
+    sub.add_parser("stop", help="stop the server")
+    args = ap.parse_args(argv)
+
+    try:
+        repo = Repo()
+        if args.cmd == "serve":
+            serve(repo)
+            return 0
+        client = Client(repo)
+        if args.cmd == "stop":
+            out = cmd_stop(client)
+        elif args.cmd == "start":
+            out = client.call("POST", "/api/start",
+                              {"ref": args.ref, "title": args.title, "new": args.new})
+            if not args.no_open:
+                webbrowser.open(out.rsplit(" ", 1)[-1])
+        elif args.cmd == "wait":
+            out = cmd_wait(client, max(args.timeout, 0))
+            print(out)
+            return 2 if out == "TIMEOUT" else 0
+        elif args.cmd == "push":
+            out = client.call("POST", "/api/push", {"text": sys.stdin.read()}, timeout=600)
+        elif args.cmd == "status":
+            out = client.call("GET", "/api/status")
+        else:
+            out = client.call("POST", "/api/end")
+        print(out)
+        return 0
+    except ReviewError as e:
+        print("error: %s" % str(e).replace("\n", " "), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

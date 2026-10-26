@@ -1,0 +1,10 @@
+CHANGES_REQUESTED round=1 comments=2
+#3 src/parser.py:+42-45
+> def parse(h):
+>     return h.split(":")
+...(+2)
+Rename to parse_header and handle None.
+#4 src/util.py:-10
+> retries = 3
+Why was this removed?
+SUMMARY: Mostly good, just these two.
