@@ -1,12 +1,14 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import { Core, DEFAULT_WAIT } from "./core.js";
 import { PENDING } from "./format.js";
 import { ReviewError, readJson, unlinkQuiet, writeJson } from "./util.js";
 
 const UI_DIR = path.join(import.meta.dirname, "..", "ui");
+const HIGHLIGHT_JS = fileURLToPath(import.meta.resolve("@highlightjs/cdn-assets/highlight.min.js"));
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; " +
   "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const IDLE_SHUTDOWN = 2 * 3600 * 1000;
@@ -49,10 +51,13 @@ export function createApp(core, { token, hosts, onShutdown }) {
     next();
   });
 
-  app.use(express.static(UI_DIR, {
-    index: "index.html", etag: false, lastModified: false, dotfiles: "deny",
+  const staticOpts = {
+    etag: false, lastModified: false, dotfiles: "deny",
     setHeaders: (res) => res.set("Content-Security-Policy", CSP),
-  }));
+  };
+  app.use(express.static(UI_DIR, staticOpts));
+  app.get("/vendor/highlight.min.js", (req, res) =>
+    res.set("Content-Security-Policy", CSP).sendFile(HIGHLIGHT_JS, { lastModified: false }));
 
   const api = express.Router();
   api.use((req, res, next) => {

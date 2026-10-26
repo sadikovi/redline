@@ -27,6 +27,14 @@
   --hunk-num: #b6e3ff;
   --select-bg: #fff8c5;
   --select-num: #fae17d;
+  --hl-keyword: #cf222e;
+  --hl-title: #8250df;
+  --hl-constant: #0550ae;
+  --hl-string: #0a3069;
+  --hl-builtin: #953800;
+  --hl-comment: #59636e;
+  --hl-tag: #116329;
+  --hl-bullet: #6c5800;
   --shadow: 0 8px 24px rgba(140, 149, 159, 0.2);
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
@@ -65,6 +73,14 @@
     --hunk-num: #388bfd66;
     --select-bg: #bb800926;
     --select-num: #bb800966;
+    --hl-keyword: #ff7b72;
+    --hl-title: #d2a8ff;
+    --hl-constant: #79c0ff;
+    --hl-string: #a5d6ff;
+    --hl-builtin: #ffa657;
+    --hl-comment: #9198a1;
+    --hl-tag: #7ee787;
+    --hl-bullet: #f2cc60;
     --shadow: 0 8px 24px rgba(1, 4, 9, 0.75);
     color-scheme: dark;
   }
@@ -429,6 +445,21 @@ tr.hunk td.code { padding-left: 10px; }
 tr.selected td.code { background: var(--select-bg); }
 tr.selected td.num { background: var(--select-num); }
 .noeol { color: var(--danger); margin-left: 4px; user-select: none; }
+
+/* Syntax highlighting: highlight.js scopes, GitHub colours. */
+.hljs-keyword, .hljs-doctag, .hljs-meta .hljs-keyword, .hljs-template-tag, .hljs-template-variable,
+.hljs-type, .hljs-variable.language_ { color: var(--hl-keyword); }
+.hljs-title, .hljs-title.class_, .hljs-title.function_ { color: var(--hl-title); }
+.hljs-attr, .hljs-attribute, .hljs-literal, .hljs-meta, .hljs-number, .hljs-operator, .hljs-variable,
+.hljs-selector-attr, .hljs-selector-class, .hljs-selector-id, .hljs-section { color: var(--hl-constant); }
+.hljs-regexp, .hljs-string, .hljs-meta .hljs-string { color: var(--hl-string); }
+.hljs-built_in, .hljs-symbol { color: var(--hl-builtin); }
+.hljs-comment, .hljs-code, .hljs-formula { color: var(--hl-comment); }
+.hljs-name, .hljs-quote, .hljs-selector-tag, .hljs-selector-pseudo { color: var(--hl-tag); }
+.hljs-subst { color: var(--fg); }
+.hljs-bullet { color: var(--hl-bullet); }
+.hljs-section, .hljs-strong { font-weight: 600; }
+.hljs-emphasis { font-style: italic; }
 
 .add-comment {
   position: absolute;

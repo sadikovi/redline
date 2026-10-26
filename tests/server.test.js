@@ -171,6 +171,13 @@ describe("security", () => {
     assert.ok(body.includes("<title>"));
   });
 
+  test("highlight.js is served from node_modules", async () => {
+    const [status, body] = await repo.http("GET", "/vendor/highlight.min.js", { token: false });
+    assert.equal(status, 200);
+    assert.ok(body.includes("hljs"));
+    assert.equal((await repo.http("GET", "/vendor/other.js", { token: false }))[0], 404);
+  });
+
   test("invalid comment path rejected", async () => {
     const [status] = await repo.http("POST", "/api/comments",
       { body: { path: "../etc/passwd", side: "new", start: 1, end: 1, body: "x" } });

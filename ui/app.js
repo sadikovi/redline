@@ -1,9 +1,10 @@
-// local-review UI. Plain ES2020, no dependencies.
+// local-review UI. Plain ES2020; highlight.js (window.hljs) is optional.
 // Every user-, file- and Claude-supplied string goes through text nodes, never innerHTML.
 "use strict";
 
 (() => {
   const LARGE_FILE_LINES = 1500;
+  const HIGHLIGHT_MAX_CHARS = 200000;
 
   // ---------- helpers ----------
 
@@ -375,14 +376,79 @@
     return "No content changes";
   }
 
+  // ---------- syntax highlighting ----------
+
+  function languageFor(path) {
+    if (!window.hljs) return null;
+    const name = path.split("/").pop().toLowerCase();
+    if (name === "makefile" || name === "gnumakefile") return "makefile";
+    const ext = name.includes(".") ? name.split(".").pop() : "";
+    return ext && hljs.getLanguage(ext) ? ext : null;
+  }
+
+  // Highlight `texts` as one block and split the result back into lines. Each line is a
+  // list of [text, scopes] segments. The highlighter's markup is parsed inertly and only
+  // its text and class names are kept, so no file content ever reaches innerHTML.
+  function highlightLines(texts, lang) {
+    const html = hljs.highlight(texts.join("\n"), { language: lang, ignoreIllegals: true }).value;
+    // Wrapped, because the parser drops whitespace (blank first lines) at the start of a document.
+    const doc = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
+    const lines = [[]];
+    (function walk(node, scopes) {
+      for (const child of node.childNodes) {
+        if (child.nodeType === Node.TEXT_NODE) {
+          child.data.split("\n").forEach((part, i) => {
+            if (i) lines.push([]);
+            if (part) lines[lines.length - 1].push([part, scopes]);
+          });
+        } else if (child.nodeType === Node.ELEMENT_NODE) {
+          walk(child, child.className ? [...scopes, child.className] : scopes);
+        }
+      }
+    })(doc.body.firstChild, []);
+    return lines.length === texts.length ? lines : null;
+  }
+
+  // Per hunk: line index -> segments. Context and added lines come from the new side,
+  // deleted lines from the old side, so each side is highlighted as contiguous code.
+  function hunkHighlights(hunk, lang) {
+    const out = new Map();
+    for (const side of ["new", "old"]) {
+      const idx = [];
+      hunk.lines.forEach((l, i) => { if (l.type === "ctx" || l.type === (side === "new" ? "add" : "del")) idx.push(i); });
+      if (!idx.length) continue;
+      const lines = highlightLines(idx.map((i) => hunk.lines[i].text), lang);
+      if (!lines) return null;
+      idx.forEach((i, k) => { if (side === "new" || hunk.lines[i].type === "del") out.set(i, lines[k]); });
+    }
+    return out;
+  }
+
+  function fileHighlights(f) {
+    const lang = languageFor(f.path);
+    if (!lang) return null;
+    const size = f.hunks.reduce((n, hk) => n + hk.lines.reduce((m, l) => m + l.text.length + 1, 0), 0);
+    if (size > HIGHLIGHT_MAX_CHARS) return null;
+    try {
+      return f.hunks.map((hk) => hunkHighlights(hk, lang));
+    } catch (e) {
+      return null; // a highlighter bug must never hide the diff
+    }
+  }
+
+  const segmentEls = (segments) => segments.map(([text, scopes]) =>
+    scopes.reduceRight((child, cls) => h("span", { class: cls }, child), text));
+
   function renderTable(entry) {
     const table = h("table", { class: "diff" },
       h("colgroup", {}, h("col", { class: "num" }), h("col", { class: "num" }), h("col", {})));
     const tbody = h("tbody");
+    const highlights = fileHighlights(entry.file);
     entry.file.hunks.forEach((hunk, hi) => {
+      const hl = highlights && highlights[hi];
       tbody.append(h("tr", { class: "hunk" }, h("td", { class: "num" }), h("td", { class: "num" }),
         h("td", { class: "code" }, hunk.header)));
-      for (const line of hunk.lines) {
+      hunk.lines.forEach((line, li) => {
         const side = line.type === "del" ? "old" : "new";
         const num = side === "old" ? line.old : line.new;
         const tr = h("tr", { class: "line " + line.type, dataset: { side, num, hunk: hi } },
@@ -391,11 +457,11 @@
           h("td", { class: "code" },
             h("button", { class: "add-comment", type: "button", "aria-label": "Add a comment", tabindex: -1 }, "+"),
             h("span", { class: "marker" }, line.type === "add" ? "+" : line.type === "del" ? "-" : " "),
-            line.text,
+            hl && hl.has(li) ? segmentEls(hl.get(li)) : line.text,
             line.noeol ? h("span", { class: "noeol", title: "No newline at end of file" }, "⊘") : null));
         entry.rows.set(`${side}:${num}`, tr);
         tbody.append(tr);
-      }
+      });
     });
     table.append(tbody);
     entry.body.append(table);

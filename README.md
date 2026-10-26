@@ -5,7 +5,8 @@ A local, GitHub-style code review loop for Claude Code. Claude makes changes, op
 comments, pushes a new round, and repeats until you approve. You commit, or choose
 **Approve and commit** and Claude commits the approved changes for you.
 
-- Node.js 22+ with a handful of npm packages (Express, Commander); plain HTML/CSS/JS UI, no build step.
+- Node.js 22+ with a handful of npm packages (Express, Commander); plain HTML/CSS/JS UI with
+  highlight.js syntax highlighting, no build step.
 - Never commits, stages or touches your index unless you choose **Approve and commit**.
   Snapshots use a temporary index and `refs/local-review/*`, which are cleaned up automatically.
 - Binds to `127.0.0.1` only, with a per-server token, `Host`/`Origin` checks and a strict CSP.

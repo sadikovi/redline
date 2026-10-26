@@ -8,7 +8,7 @@ A local, GitHub-style code review loop for Claude Code. Claude makes changes, op
 
 - A GitHub "Files changed" style UI for the working-tree changes: file list with added/modified/deleted/renamed status, unified diff, line and range comments, threaded replies, "Request changes" and "Approve".
 - A review loop driven from a single Claude Code slash command, with Claude notified when the reviewer submits (no polling from Claude's side).
-- **Few, well-known dependencies.** Node.js 22+ with Express (HTTP), Commander (CLI), proper-lockfile, write-file-atomic and open; plain HTML, CSS and JavaScript for the UI. No build step, no CDN.
+- **Few, well-known dependencies.** Node.js 22+ with Express (HTTP), Commander (CLI), proper-lockfile, write-file-atomic and open; plain HTML, CSS and JavaScript for the UI, plus highlight.js's prebuilt browser bundle (served from `node_modules` at `/vendor/highlight.min.js`). No build step, no CDN.
 - **Minimal token use.** Every CLI output Claude reads is compact plain text, designed so Claude never has to read the diff through the tool (it already knows what it changed).
 - Local only, safe against other processes and web pages on the same machine.
 
@@ -297,7 +297,7 @@ The server keeps a monotonically increasing `version`; every mutation bumps it a
 
 ## 9. UI
 
-Plain HTML, CSS and JavaScript (ES2020, no framework). Should look and behave like GitHub's pull request "Files changed" tab. Light and dark themes via `prefers-color-scheme`, using GitHub-like colours.
+Plain HTML, CSS and JavaScript (ES2020, no framework; highlight.js for syntax colouring). Should look and behave like GitHub's pull request "Files changed" tab. Light and dark themes via `prefers-color-scheme`, using GitHub-like colours.
 
 ### Layout
 
@@ -305,7 +305,7 @@ Plain HTML, CSS and JavaScript (ES2020, no framework). Should look and behave li
 - **Left sidebar (resizable, collapsible):** file tree grouped by directory, with a filter box. Each file shows a status marker (A green, M amber, D red, R blue), `+/−` counts, an open-comment count, and a tick when marked viewed. Clicking scrolls to the file.
 - **Main area:** one card per file, in tree order.
   - Sticky header: collapse chevron, path (for renames `old → new`), `+/−` bar, **Viewed** checkbox (collapses the card; stored in `localStorage` keyed by review id, round and path).
-  - Unified diff table: old line number, new line number, code. Hunk header rows (`@@ -a,b +c,d @@ context`). Add and delete rows tinted green and red. Monospace font, tab size 4, long lines wrap.
+  - Unified diff table: old line number, new line number, code. Hunk header rows (`@@ -a,b +c,d @@ context`). Add and delete rows tinted green and red. Monospace font, tab size 4, long lines wrap. Syntax highlighting by file extension (highlight.js common languages, GitHub colours in both themes): each hunk's old side (context + deleted) and new side (context + added) is highlighted as one block so multi-line strings and comments colour correctly, then split back into lines. Only the highlighter's text and class names are kept (parsed inertly, rebuilt with text nodes). Files over 200,000 characters of diff, or in unknown languages, stay plain.
 
 ### Commenting
 
