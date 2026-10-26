@@ -370,7 +370,7 @@ def format_wait(r):
     n = len(r["rounds"])
     items = attention(r)
     if r["status"] == APPROVED:
-        out = ["APPROVED round=%d" % n]
+        out = ["APPROVED round=%d" % n + (" commit=requested" if r.get("commitRequested") else "")]
     else:
         out = ["CHANGES_REQUESTED round=%d comments=%d" % (n, len(items))]
     for c, followup, msgs in items:
@@ -425,6 +425,7 @@ class Core:
         self.closing = False
         self.url = ""
         self.last_request = time.time()
+        self.last_result = None  # shown by the UI after a review is committed
         self._diff_cache = {}
         self.review = read_json(self.review_path)
 
@@ -460,7 +461,8 @@ class Core:
 
     # -- git
 
-    def _snapshot(self, rid, n, base):
+    def _worktree_tree(self):
+        """Tree of the whole working tree (untracked included), via a temporary index."""
         idx = os.path.join(self.state_dir, "index.tmp")
         try:
             os.unlink(idx)
@@ -469,7 +471,10 @@ class Core:
         env = {"GIT_INDEX_FILE": idx}
         self.git.run("read-tree", "HEAD", env=env)
         self.git.run("add", "-A", env=env)
-        tree = self.git.out("write-tree", env=env)
+        return self.git.out("write-tree", env=env)
+
+    def _snapshot(self, rid, n, base):
+        tree = self._worktree_tree()
         commit = self.git.out("commit-tree", "--no-gpg-sign", tree, "-p", base,
                               "-m", "local-review %s round %d" % (rid, n), env=IDENTITY)
         self.git.run("update-ref", "%s%s/round-%d" % (REF_PREFIX, rid, n), commit)
@@ -558,7 +563,7 @@ class Core:
             head = self.git.run("rev-parse", "--verify", "--quiet", "HEAD^{commit}", check=False)
             if head.returncode != 0:
                 raise ReviewError("repository has no commits")
-            base = head.stdout.decode().strip()
+            base = head_sha = head.stdout.decode().strip()
             if ref:
                 base = self.git.out("merge-base", base, self.git.verify_commit(ref))
             rid = secrets.token_hex(3)
@@ -573,6 +578,7 @@ class Core:
                 "id": rid,
                 "title": title or "",
                 "branch": branch.stdout.decode().strip(),
+                "head": head_sha,
                 "base": base,
                 "status": PENDING,
                 "rounds": [{"n": 1, "commit": commit, "createdAt": now_iso()}],
@@ -596,6 +602,72 @@ class Core:
             r = self._require()
             self._archive(r)
             return "ended %s" % r["id"]
+
+    def _check_commit_target(self, r):
+        """The original branch must be checked out and still at the review's starting commit."""
+        if not r.get("branch") or not r.get("head"):
+            raise ReviewError("review was not started on a branch; cannot commit", 409)
+        cur = self.git.run("symbolic-ref", "--short", "-q", "HEAD", check=False).stdout.decode().strip()
+        if cur != r["branch"]:
+            raise ReviewError("branch %s is not checked out" % r["branch"], 409)
+        if self.git.out("rev-parse", "HEAD") != r["head"]:
+            raise ReviewError("%s has moved since the review started" % r["branch"], 409)
+
+    def commit(self, message):
+        """Commit the approved snapshot on the original branch with `git commit` (hooks run)."""
+        if not isinstance(message, str) or not message.strip():
+            raise ReviewError("commit message is empty")
+        with self.cond:
+            r = self._require(APPROVED)
+            if not r.get("commitRequested"):
+                raise ReviewError("the reviewer did not ask to commit", 409)
+            self._check_commit_target(r)
+            approved = self.git.out("rev-parse", r["rounds"][-1]["commit"] + "^{tree}")
+            if self._worktree_tree() != approved:
+                raise ReviewError("working tree differs from the approved snapshot; nothing committed", 409)
+            if approved == self.git.out("rev-parse", "HEAD^{tree}"):
+                line = "nothing to commit; %s already matches the approved snapshot" % r["branch"]
+            else:
+                sha = self._git_commit(r, message.strip() + "\n", approved)
+                line = "committed %s on %s" % (sha[:7], r["branch"])
+                r["committed"] = sha
+                r.pop("commitError", None)
+            self.last_result = line
+            self._archive(r)
+            return line
+
+    def _git_commit(self, r, message, approved):
+        index = os.path.join(self.repo.top, self.git.out("rev-parse", "--git-path", "index"))
+        try:
+            with open(index, "rb") as f:
+                backup = f.read()
+        except FileNotFoundError:
+            backup = None
+        msg_path = os.path.join(self.state_dir, "COMMIT_MSG")
+        atomic_write(msg_path, message.encode("utf-8"))
+        try:
+            self.git.run("add", "-A")
+            if self.git.out("write-tree") != approved:
+                raise ReviewError("working tree changed during commit; nothing committed", 409)
+            self.git.run("commit", "-q", "--cleanup=strip", "-F", msg_path, env={"GIT_EDITOR": "true"})
+        except ReviewError as e:
+            # Put the user's index back exactly as it was.
+            if backup is None:
+                try:
+                    os.unlink(index)
+                except FileNotFoundError:
+                    pass
+            else:
+                atomic_write(index, backup)
+            r["commitError"] = str(e)
+            self._commit(r)
+            raise ReviewError("commit failed: %s" % e, 409)
+        finally:
+            try:
+                os.unlink(msg_path)
+            except FileNotFoundError:
+                pass
+        return self.git.out("rev-parse", "HEAD")
 
     def wait(self, timeout):
         deadline = time.monotonic() + timeout
@@ -673,8 +745,7 @@ class Core:
 
     def payload(self):
         with self.cond:
-            r = self._require()
-            return {"version": self.version, "review": r}
+            return {"version": self.version, "review": self.review, "lastResult": self.last_result}
 
     def events(self, version, timeout=EVENTS_TIMEOUT):
         deadline = time.monotonic() + timeout
@@ -793,11 +864,14 @@ class Core:
     def submit(self, body):
         verdict = body.get("verdict")
         summary = body.get("summary") or ""
-        if verdict not in ("request_changes", "approve") or not isinstance(summary, str):
+        if verdict not in ("request_changes", "approve", "approve_commit") or not isinstance(summary, str):
             raise ReviewError("invalid verdict")
         summary = summary.strip()
         with self.cond:
             r = self._require(PENDING)
+            if verdict == "approve_commit":
+                self._check_commit_target(r)  # fail now, not after Claude writes a message
+                r["commitRequested"] = True
             n = len(r["rounds"])
             for c in r["comments"]:
                 if c["state"] == "draft":
@@ -965,6 +1039,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 text = core.start(body.get("ref") or None, body.get("title") or None,
                                   bool(body.get("new")))
                 return self._send(200, text, "text/plain")
+            if path == "/api/commit":
+                return self._send(200, core.commit(body.get("message")), "text/plain")
             if path == "/api/end":
                 return self._send(200, core.end(), "text/plain")
             if path == "/api/shutdown":
@@ -1174,6 +1250,7 @@ def main(argv=None):
     p = sub.add_parser("wait", help="wait for the reviewer to submit")
     p.add_argument("--timeout", type=int, default=DEFAULT_WAIT)
     sub.add_parser("push", help="reply to comments (stdin) and push a new round")
+    sub.add_parser("commit", help="commit the approved snapshot; message from stdin")
     sub.add_parser("status", help="show the current review")
     sub.add_parser("end", help="archive the review and delete its refs")
     sub.add_parser("serve", help="run the server in the foreground")
@@ -1199,6 +1276,8 @@ def main(argv=None):
             return 2 if out == "TIMEOUT" else 0
         elif args.cmd == "push":
             out = client.call("POST", "/api/push", {"text": sys.stdin.read()}, timeout=600)
+        elif args.cmd == "commit":
+            out = client.call("POST", "/api/commit", {"message": sys.stdin.read()}, timeout=600)
         elif args.cmd == "status":
             out = client.call("GET", "/api/status")
         else:

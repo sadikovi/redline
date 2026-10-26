@@ -35,6 +35,10 @@
           <input type="radio" name="verdict" value="approve">
           <span><strong>Approve</strong><br><span class="muted">Approve these changes. You commit them yourself.</span></span>
         </label>
+        <label class="radio">
+          <input type="radio" name="verdict" value="approve_commit">
+          <span><strong>Approve and commit</strong><br><span class="muted">Claude writes the message and commits the approved changes on <span id="commit-branch">the original branch</span>.</span></span>
+        </label>
         <div id="finish-error" class="form-error" hidden></div>
         <div class="actions"><button id="submit-review" class="btn btn-primary" type="button">Submit review</button></div>
       </div>

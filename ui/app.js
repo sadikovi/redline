@@ -94,6 +94,7 @@
     sel: null,        // {path, side, hunk, start, end, anchor}
     form: null,       // {row, textarea, key}
     ended: false,
+    lastResult: null,
     conn: "ok",       // ok | lost | unauthorized
     newRound: false,
     ui: { reply: {}, edit: {}, expanded: {}, outdatedOpen: {}, summary: "" },
@@ -122,6 +123,7 @@
     $("#title").textContent = r ? r.title || r.branch || "Local review" : "Local review";
     document.title = (r && (r.title || r.branch)) ? `Review · ${r.title || r.branch}` : "Local review";
     $("#base").textContent = r ? `base ${r.base.slice(0, 7)}` : "";
+    $("#commit-branch").textContent = r && r.branch ? r.branch : "the original branch";
 
     const rs = $("#round-select");
     rs.replaceChildren();
@@ -170,7 +172,9 @@
         "This page has no valid token. Open the URL printed by ", h("code", {}, "review start"), "."));
     }
     if (S.ended) {
-      box.append(h("div", { class: "banner info" }, "This review has ended."));
+      box.append(S.lastResult
+        ? h("div", { class: "banner success" }, h("strong", {}, "Approved"), " · " + S.lastResult)
+        : h("div", { class: "banner info" }, "This review has ended."));
       return;
     }
     if (!r) return;
@@ -181,6 +185,11 @@
     }
     if (r.status === "changes_requested") {
       box.append(h("div", { class: "banner warn" }, h("span", { class: "spinner" }), "Waiting for Claude…"));
+    } else if (r.status === "approved" && r.commitError) {
+      box.append(h("div", { class: "banner danger" }, h("strong", {}, "Commit failed"), " · " + r.commitError));
+    } else if (r.status === "approved" && r.commitRequested) {
+      box.append(h("div", { class: "banner success" }, h("span", { class: "spinner" }),
+        h("strong", {}, "Approved"), ` · waiting for Claude to commit on ${r.branch}…`));
     } else if (r.status === "approved") {
       box.append(h("div", { class: "banner success" }, h("strong", {}, "Approved"), " · ready to commit"));
     }
@@ -765,17 +774,19 @@
     try {
       data = await api("GET", "/review");
     } catch (e) {
-      if (e.status === 404) {
-        S.review = null;
-        S.ended = true;
-        document.body.classList.remove("can-comment");
-        renderTop();
-        renderBanners();
-        renderThreads();
-        return;
-      }
       if (e.status === 401) { S.conn = "unauthorized"; renderBanners(); }
       throw e;
+    }
+    if (!data.review) {
+      S.review = null;
+      S.ended = true;
+      S.version = data.version;
+      S.lastResult = data.lastResult;
+      document.body.classList.remove("can-comment");
+      renderTop();
+      renderBanners();
+      renderThreads();
+      return;
     }
     const replaced = S.review == null ? S.ended : S.review.id !== data.review.id;
     S.review = data.review;
