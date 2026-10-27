@@ -18,7 +18,7 @@ export class Repo {
     if (p.status !== 0 || lines.length < 3) throw new ReviewError("not inside a git work tree");
     [this.top, this.gitDir] = lines;
     this.commonDir = path.resolve(cwd, lines[2]);
-    this.stateDir = path.join(this.gitDir, "local-review");
+    this.stateDir = path.join(this.gitDir, "redline");
   }
 }
 

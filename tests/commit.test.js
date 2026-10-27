@@ -39,7 +39,7 @@ describe("approve and commit", () => {
     assert.equal(repo.git("rev-parse", "HEAD^{tree}").trim(), approvedTree);
     assert.equal(repo.git("log", "-1", "--format=%an|%B").trim(), "Test|Rename line two\n\nAdds new.txt too.");
     assert.equal(repo.git("status", "--porcelain"), "");
-    assert.equal(repo.git("for-each-ref", "refs/local-review"), "");
+    assert.equal(repo.git("for-each-ref", "refs/redline"), "");
     assert.equal(core.review, null);
     assert.equal(core.payload().lastResult, out);
   });

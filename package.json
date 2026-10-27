@@ -1,18 +1,18 @@
 {
-  "name": "local-review",
+  "name": "redline",
   "version": "1.0.0",
   "description": "A local, GitHub-style code review loop for Claude Code",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
   "bin": {
-    "review": "bin/review.js"
+    "redline": "bin/redline.js"
   },
   "engines": {
     "node": ">=22.22.2"
   },
   "scripts": {
-    "start": "cd \"$INIT_CWD\" && node \"$OLDPWD/bin/review.js\" serve",
+    "start": "cd \"$INIT_CWD\" && node \"$OLDPWD/bin/redline.js\" serve",
     "test": "node --test"
   },
   "dependencies": {

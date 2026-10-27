@@ -1,4 +1,4 @@
-// local-review UI. Plain ES2020; highlight.js (window.hljs) is optional.
+// redline UI. Plain ES2020; highlight.js (window.hljs) is optional.
 // Every user-, file- and Claude-supplied string goes through text nodes, never innerHTML.
 "use strict";
 
@@ -122,8 +122,8 @@
 
   function renderTop() {
     const r = S.review;
-    $("#title").textContent = r ? r.title || r.branch || "Local review" : "Local review";
-    const title = (r && (r.title || r.branch)) ? `Review · ${r.title || r.branch}` : "Local review";
+    $("#title").textContent = r ? r.title || r.branch || "Redline" : "Redline";
+    const title = (r && (r.title || r.branch)) ? `Review · ${r.title || r.branch}` : "Redline";
     document.title = S.attention ? `● ${S.attention} · ${title}` : title;
     $("#base").textContent = r ? `base ${r.base.slice(0, 7)}` : "";
     $("#commit-branch").textContent = r && r.branch ? r.branch : "the original branch";
@@ -857,7 +857,7 @@
     renderTop();
     if ("Notification" in window && Notification.permission === "granted") {
       try {
-        const n = new Notification("Local review", { body: msg, tag: "local-review" });
+        const n = new Notification("Redline", { body: msg, tag: "redline" });
         n.onclick = () => { window.focus(); n.close(); };
       } catch { /* some browsers only allow notifications from a service worker */ }
     }

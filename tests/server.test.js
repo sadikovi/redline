@@ -35,7 +35,7 @@ async function submit(verdict = "request_changes") {
   assert.equal(status, 200, JSON.stringify(body));
 }
 
-/** `review wait` in the background, checked to be blocking. */
+/** `redline wait` in the background, checked to be blocking. */
 async function backgroundWait() {
   const proc = repo.spawnCli(["wait", "--timeout", "30"]);
   await sleep(1000);
@@ -43,7 +43,7 @@ async function backgroundWait() {
   return proc;
 }
 
-const stateFile = (name) => path.join(repo.dir, ".git", "local-review", name);
+const stateFile = (name) => path.join(repo.dir, ".git", "redline", name);
 
 describe("cli", () => {
   setUp();
@@ -88,7 +88,7 @@ describe("cli", () => {
   test("end", () => {
     const rid = startLine.split(" ")[1];
     assert.equal(repo.cli(["end"]).stdout, `ended ${rid}\n`);
-    assert.equal(repo.git("for-each-ref", "refs/local-review"), "");
+    assert.equal(repo.git("for-each-ref", "refs/redline"), "");
     assert.ok(fs.existsSync(stateFile(path.join("archive", rid + ".json"))));
   });
 });
@@ -235,18 +235,18 @@ describe("recovery", () => {
 describe("cleanup", () => {
   setUp();
 
-  const refs = () => repo.git("for-each-ref", "--format=%(refname)", "refs/local-review").split(/\s+/).filter(Boolean);
+  const refs = () => repo.git("for-each-ref", "--format=%(refname)", "refs/redline").split(/\s+/).filter(Boolean);
 
   test("start after approval removes old and orphaned refs", async () => {
     const oldId = startLine.split(" ")[1];
-    repo.git("update-ref", "refs/local-review/dead00/round-1", "HEAD");
+    repo.git("update-ref", "refs/redline/dead00/round-1", "HEAD");
     await submit("approve");
     repo.write("a.txt", lines(10).replace("line 4\n", "four\n"));
     const p = repo.cli(["start", "--no-open"]);
     assert.match(p.stdout, /^review [0-9a-f]{6} round 1 /);
     const newId = p.stdout.split(" ")[1];
     assert.notEqual(newId, oldId);
-    assert.deepEqual(refs(), [`refs/local-review/${newId}/round-1`]);
+    assert.deepEqual(refs(), [`refs/redline/${newId}/round-1`]);
   });
 
   test("start --new discards", () => {

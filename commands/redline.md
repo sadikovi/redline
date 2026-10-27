@@ -1,15 +1,15 @@
 ---
 description: GitHub-style local review of current changes; iterate until approved
 argument-hint: "[<base-ref> | new [<base-ref>] | status | open | pause | stop]"
-allowed-tools: Bash(node /Users/ivansadikov/Developer/local-review/bin/review.js:*), Bash(git log:*), Bash(git diff:*), Bash(git status:*)
+allowed-tools: Bash(node /Users/ivansadikov/Developer/redline/bin/redline.js:*), Bash(git log:*), Bash(git diff:*), Bash(git status:*)
 ---
-`REVIEW` below stands for `node /Users/ivansadikov/Developer/local-review/bin/review.js`. Always run it with that full command.
+`REVIEW` below stands for `node /Users/ivansadikov/Developer/redline/bin/redline.js`. Always run it with that full command.
 
 Arguments: `$ARGUMENTS`. Act on the first word:
 
 - `status`: run `REVIEW status` and relay its output in one line. Nothing else.
 - `open`: run `REVIEW open` (opens the page) and give the user the URL in one line. Nothing else.
-- `pause`: stop any background `REVIEW wait` you started, then run `REVIEW stop`. Say "Paused; run /local-review to resume." in one line. The review is kept.
+- `pause`: stop any background `REVIEW wait` you started, then run `REVIEW stop`. Say "Paused; run /redline to resume." in one line. The review is kept.
 - `stop`: stop any background `REVIEW wait` you started, run `REVIEW end` (ignore a "no active review" error), then `REVIEW stop`. Say "Review ended." in one line.
 - `new`: run `REVIEW start --new <remaining arguments>`, then continue with **The loop** below.
 - anything else, or nothing: run `REVIEW start $ARGUMENTS`, then continue with **The loop** below.

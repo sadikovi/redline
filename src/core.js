@@ -10,10 +10,10 @@ export const DEFAULT_WAIT = 1800;
 const EVENTS_TIMEOUT = 25;
 const ARCHIVE_MAX_AGE = 30 * 86400;
 const MAX_COMMENT = 65536;
-const REF_PREFIX = "refs/local-review/";
+const REF_PREFIX = "refs/redline/";
 const IDENTITY = {
-  GIT_AUTHOR_NAME: "local-review", GIT_AUTHOR_EMAIL: "local-review@localhost",
-  GIT_COMMITTER_NAME: "local-review", GIT_COMMITTER_EMAIL: "local-review@localhost",
+  GIT_AUTHOR_NAME: "redline", GIT_AUTHOR_EMAIL: "redline@localhost",
+  GIT_COMMITTER_NAME: "redline", GIT_COMMITTER_EMAIL: "redline@localhost",
 };
 
 /**
@@ -98,7 +98,7 @@ export class Core {
   _snapshot(rid, n, base) {
     const tree = this._worktreeTree();
     const commit = this.git.out(["commit-tree", "--no-gpg-sign", tree, "-p", base,
-      "-m", `local-review ${rid} round ${n}`], { env: IDENTITY });
+      "-m", `redline ${rid} round ${n}`], { env: IDENTITY });
     this.git.run(["update-ref", `${REF_PREFIX}${rid}/round-${n}`, commit]);
     return [commit, tree];
   }
@@ -138,10 +138,10 @@ export class Core {
   /** Ids of unfinished reviews in this and every other worktree (refs are shared). */
   _activeIds() {
     const ids = new Set(this.review ? [this.review.id] : []);
-    const paths = [path.join(this.repo.commonDir, "local-review", "review.json")];
+    const paths = [path.join(this.repo.commonDir, "redline", "review.json")];
     const wt = path.join(this.repo.commonDir, "worktrees");
     const names = fs.existsSync(wt) ? fs.readdirSync(wt) : [];
-    for (const name of names) paths.push(path.join(wt, name, "local-review", "review.json"));
+    for (const name of names) paths.push(path.join(wt, name, "redline", "review.json"));
     for (const p of paths) {
       const other = readJson(p);
       if (other && typeof other === "object" && other.id) ids.add(other.id);

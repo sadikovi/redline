@@ -35,13 +35,13 @@ describe("snapshot", () => {
   test("round ref written and no changes rejected", () => {
     const core = repo.core();
     assert.throws(() => core.start(), /no changes/);
-    assert.equal(repo.git("for-each-ref", "refs/local-review"), "");
+    assert.equal(repo.git("for-each-ref", "refs/redline"), "");
     assert.equal(core.review, null);
 
     repo.write("tracked.txt", "changed\n");
     core.start();
-    const refs = repo.git("for-each-ref", "--format=%(refname)", "refs/local-review").split(/\s+/).filter(Boolean);
-    assert.deepEqual(refs, [`refs/local-review/${core.review.id}/round-1`]);
+    const refs = repo.git("for-each-ref", "--format=%(refname)", "refs/redline").split(/\s+/).filter(Boolean);
+    assert.deepEqual(refs, [`refs/redline/${core.review.id}/round-1`]);
   });
 
   test("base ref uses merge-base", () => {

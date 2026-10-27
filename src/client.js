@@ -4,7 +4,7 @@ import path from "node:path";
 import lockfile from "proper-lockfile";
 import { ReviewError, readJson, sleep } from "./util.js";
 
-const BIN = path.join(import.meta.dirname, "..", "bin", "review.js");
+const BIN = path.join(import.meta.dirname, "..", "bin", "redline.js");
 // Undici (fetch) gives up waiting for response headers after 300 s, so long waits are chunked.
 const MAX_WAIT_CHUNK = 240;
 

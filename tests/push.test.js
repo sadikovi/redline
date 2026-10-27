@@ -38,10 +38,10 @@ describe("push", () => {
 
   test("unknown id rejected atomically", () => {
     const beforeReview = core.review;
-    const refs = repo.git("for-each-ref", "refs/local-review");
+    const refs = repo.git("for-each-ref", "refs/redline");
     assert.throws(() => core.push("#1 resolve: done\n#99 reply: what"), /#99/);
     assert.equal(core.review, beforeReview);
-    assert.equal(repo.git("for-each-ref", "refs/local-review"), refs);
+    assert.equal(repo.git("for-each-ref", "refs/redline"), refs);
   });
 
   test("unanswered listed", () => {

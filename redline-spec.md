@@ -1,4 +1,4 @@
-# local-review — project spec
+# redline — project spec
 
 A local, GitHub-style code review loop for Claude Code. Claude makes changes, opens a review page in the browser, waits for the reviewer to submit, addresses the comments, pushes a new round and repeats until the reviewer approves. The reviewer then commits.
 
@@ -21,25 +21,25 @@ A local, GitHub-style code review loop for Claude Code. Claude makes changes, op
 ## 2. Workflow
 
 1. The user asks Claude to build something.
-2. The user runs `/local-review` (optionally with a base ref, e.g. `/local-review main`).
-3. Claude runs `review start`. The server starts if not running, snapshots the changes as round 1 and opens the browser.
-4. Claude runs `review wait` **as a background command** and stays free for chat.
+2. The user runs `/redline` (optionally with a base ref, e.g. `/redline main`).
+3. Claude runs `redline start`. The server starts if not running, snapshots the changes as round 1 and opens the browser.
+4. Claude runs `redline wait` **as a background command** and stays free for chat.
 5. The user comments in the browser. Comments are drafts until the user clicks **Finish your review** and submits **Request changes** or **Approve**.
-6. `review wait` exits, which notifies Claude.
-   - `CHANGES_REQUESTED`: Claude addresses each comment, then runs `review push` with one reply per comment in a single call. This records the replies, snapshots round N+1 and refreshes the UI. Claude starts `review wait` in the background again.
+6. `redline wait` exits, which notifies Claude.
+   - `CHANGES_REQUESTED`: Claude addresses each comment, then runs `redline push` with one reply per comment in a single call. This records the replies, snapshots round N+1 and refreshes the UI. Claude starts `redline wait` in the background again.
    - `APPROVED`: Claude tells the user in one line and stops. It does not commit.
-   - `TIMEOUT`: Claude starts `review wait` in the background again, silently.
+   - `TIMEOUT`: Claude starts `redline wait` in the background again, silently.
 7. The user commits.
 
 ## 3. Architecture
 
 ```
-local-review/
-  bin/review.js       # CLI entry point (commander)
+redline/
+  bin/redline.js       # CLI entry point (commander)
   src/
     core.js           # review state and logic (the single source of truth)
     diff.js           # `git diff` parser, anchors
-    format.js         # `review wait` / `review push` text formats
+    format.js         # `redline wait` / `redline push` text formats
     git.js            # repository locations, git runner
     server.js         # Express app and `serve`
     client.js         # HTTP client, detached server start
@@ -49,21 +49,21 @@ local-review/
     app.js
     app.css
   commands/
-    local-review.md   # Claude Code slash command (copy to ~/.claude/commands/)
+    redline.md   # Claude Code slash command (copy to ~/.claude/commands/)
   tests/
     *.test.js         # node:test
   package.json        # dependencies; `npm start` (foreground server), `npm test`
   README.md
 ```
 
-- ES modules. `bin/review.js` is the `review` command (`npm link` puts it on `PATH`).
-- The server and CLI are the same program. `review serve` runs the HTTP server; every other subcommand is a thin HTTP client to it.
+- ES modules. `bin/redline.js` is the `redline` command (`npm link` puts it on `PATH`).
+- The server and CLI are the same program. `redline serve` runs the HTTP server; every other subcommand is a thin HTTP client to it.
 - The server is the single source of truth. The CLI never edits state files directly, so the UI and Claude never disagree.
 - One server per repository (per `git rev-parse --git-dir`, so worktrees get separate servers).
 
 ### State directory
 
-All state lives in `<git-dir>/local-review/`, so git never tracks it and nothing needs adding to `.gitignore`.
+All state lives in `<git-dir>/redline/`, so git never tracks it and nothing needs adding to `.gitignore`.
 
 | File | Contents |
 |---|---|
@@ -84,16 +84,16 @@ Use a temporary index so the user's real index is never touched:
 GIT_INDEX_FILE=<state>/index.tmp git read-tree HEAD
 GIT_INDEX_FILE=<state>/index.tmp git add -A        # respects .gitignore; includes untracked files
 tree=$(GIT_INDEX_FILE=<state>/index.tmp git write-tree)
-commit=$(git commit-tree $tree -p <base> -m "local-review <id> round <n>")
-git update-ref refs/local-review/<id>/round-<n> $commit
+commit=$(git commit-tree $tree -p <base> -m "redline <id> round <n>")
+git update-ref refs/redline/<id>/round-<n> $commit
 ```
 
-The ref protects the snapshot from `git gc`. Delete `refs/local-review/<id>/*` when the review ends.
+The ref protects the snapshot from `git gc`. Delete `refs/redline/<id>/*` when the review ends.
 
 ### Base
 
-- Default base is `HEAD`, resolved to a commit SHA at `review start` and fixed for the review's lifetime.
-- `review start <ref>` uses `git merge-base HEAD <ref>`, so `/local-review main` reviews the whole branch plus uncommitted work.
+- Default base is `HEAD`, resolved to a commit SHA at `redline start` and fixed for the review's lifetime.
+- `redline start <ref>` uses `git merge-base HEAD <ref>`, so `/redline main` reviews the whole branch plus uncommitted work.
 
 ### Diff modes in the UI
 
@@ -143,7 +143,7 @@ The server parses unified diff output into JSON for the UI: per file, `{path, ol
 
 ### Relocating comments on a new round
 
-When `review push` creates round N+1, for each `open` comment on the `new` side:
+When `redline push` creates round N+1, for each `open` comment on the `new` side:
 
 1. Look for the `anchor` lines as an exact contiguous match in the new version of the file, choosing the match nearest the old position.
 2. If found, update `start`/`end`.
@@ -157,13 +157,13 @@ All output is plain text, no colour, no banners and no progress messages. Errors
 
 | Command | Behaviour | Stdout on success |
 |---|---|---|
-| `review start [<ref>] [--title T] [--no-open] [--new]` | Start server if needed (detached, `start_new_session=True`). Run cleanup (section 6a). If an unfinished review exists, resume it (see 6a) unless `--new`. Otherwise create a review and round 1. Open the browser with `webbrowser.open` unless `--no-open`. | `review a1b2c3 round 1 http://127.0.0.1:PORT/#t=TOKEN`, or `resumed a1b2c3 round 2 changes_requested comments=2 http://...` |
-| `review wait [--timeout S]` | Long-poll the server until a submitted, unconsumed review exists or the timeout passes. Default timeout 1,800 s. | See section 7 |
-| `review push` | Read replies from stdin, apply them, snapshot round N+1, relocate comments, set status `pending_review`, notify the UI. | `round 2 ok` or `round 2 ok; unanswered: #5 #7` |
-| `review status` | Current state. | `a1b2c3 round 2 pending_review open=1` |
-| `review end` | Archive the review, delete its refs. | `ended a1b2c3` |
-| `review serve` | Run the server in the foreground (used internally and for debugging). | — |
-| `review stop` | Stop the server. | `stopped` |
+| `redline start [<ref>] [--title T] [--no-open] [--new]` | Start server if needed (detached, `start_new_session=True`). Run cleanup (section 6a). If an unfinished review exists, resume it (see 6a) unless `--new`. Otherwise create a review and round 1. Open the browser with `webbrowser.open` unless `--no-open`. | `redline a1b2c3 round 1 http://127.0.0.1:PORT/#t=TOKEN`, or `resumed a1b2c3 round 2 changes_requested comments=2 http://...` |
+| `redline wait [--timeout S]` | Long-poll the server until a submitted, unconsumed review exists or the timeout passes. Default timeout 1,800 s. | See section 7 |
+| `redline push` | Read replies from stdin, apply them, snapshot round N+1, relocate comments, set status `pending_review`, notify the UI. | `round 2 ok` or `round 2 ok; unanswered: #5 #7` |
+| `redline status` | Current state. | `a1b2c3 round 2 pending_review open=1` |
+| `redline end` | Archive the review, delete its refs. | `ended a1b2c3` |
+| `redline serve` | Run the server in the foreground (used internally and for debugging). | — |
+| `redline stop` | Stop the server. | `stopped` |
 
 Exit codes: `0` success, `2` wait timeout, `1` error.
 
@@ -174,26 +174,26 @@ Nothing depends on the Claude session staying alive. All state is on disk (`revi
 **If the Claude session crashes or is closed:**
 
 - The server keeps running, so the page stays usable and the reviewer can still comment and submit.
-- In a new session, `/local-review` runs `review start`, which finds the unfinished review and resumes it instead of creating a new one:
-  - status `pending_review` → print `resumed ...`; Claude goes straight to `review wait`.
-  - status `changes_requested` and not yet consumed → `review wait` returns the submitted comments immediately.
-  - status `changes_requested`, already consumed, but no push recorded → the previous session crashed mid-fix. `review start` prints `resumed ... changes_requested comments=N`, and `review wait` re-delivers the same comments (reset `consumed` to the previous round). Claude checks the working tree, finishes the fixes and pushes as usual.
-- Use `review start --new` to discard the unfinished review (it is archived and its refs deleted) and start fresh.
+- In a new session, `/redline` runs `redline start`, which finds the unfinished review and resumes it instead of creating a new one:
+  - status `pending_review` → print `resumed ...`; Claude goes straight to `redline wait`.
+  - status `changes_requested` and not yet consumed → `redline wait` returns the submitted comments immediately.
+  - status `changes_requested`, already consumed, but no push recorded → the previous session crashed mid-fix. `redline start` prints `resumed ... changes_requested comments=N`, and `redline wait` re-delivers the same comments (reset `consumed` to the previous round). Claude checks the working tree, finishes the fixes and pushes as usual.
+- Use `redline start --new` to discard the unfinished review (it is archived and its refs deleted) and start fresh.
 
-**If the server crashes:** `review start` and every client command detect a dead pid or unresponsive port in `server.json`, start a new server (new port and token) and continue from `review.json`. Draft comments survive because they are stored server-side on disk. The open browser tab shows `Server restarted · Reopen` with the new URL fetched via `review start --no-open`.
+**If the server crashes:** `redline start` and every client command detect a dead pid or unresponsive port in `server.json`, start a new server (new port and token) and continue from `review.json`. Draft comments survive because they are stored server-side on disk. The open browser tab shows `Server restarted · Reopen` with the new URL fetched via `redline start --no-open`.
 
 **If a snapshot is interrupted:** `index.tmp` is rebuilt from scratch with `git read-tree` on every snapshot, so a leftover file is harmless. A round is recorded in `review.json` only after its ref is written, so a half-made round never appears.
 
-**Cleanup.** Snapshots are only reachable through `refs/local-review/<id>/*`; once those refs are deleted, `git gc` prunes the objects after its normal expiry (two weeks by default). Most snapshot objects are blobs already in the repo, so the extra disk use is small. Refs are deleted:
+**Cleanup.** Snapshots are only reachable through `refs/redline/<id>/*`; once those refs are deleted, `git gc` prunes the objects after its normal expiry (two weeks by default). Most snapshot objects are blobs already in the repo, so the extra disk use is small. Refs are deleted:
 
-1. by `review end`;
-2. automatically by `review start` when the current review is `approved` (archive it, delete its refs, then start a new one). This covers the normal case where the user commits after approval and never runs `review end`;
-3. automatically by `review start` for any `refs/local-review/<id>/*` whose id is not the current review (orphans from crashes or manual deletion of `review.json`);
-4. automatically by `review start` for archived reviews older than 30 days (`archive/<id>.json` files are deleted too).
+1. by `redline end`;
+2. automatically by `redline start` when the current review is `approved` (archive it, delete its refs, then start a new one). This covers the normal case where the user commits after approval and never runs `redline end`;
+3. automatically by `redline start` for any `refs/redline/<id>/*` whose id is not the current review (orphans from crashes or manual deletion of `review.json`);
+4. automatically by `redline start` for archived reviews older than 30 days (`archive/<id>.json` files are deleted too).
 
-The user never has to clean anything up manually. `review end` exists for when they want it done immediately.
+The user never has to clean anything up manually. `redline end` exists for when they want it done immediately.
 
-### `review push` input format
+### `redline push` input format
 
 One line per comment. The message runs to the end of the line.
 
@@ -217,7 +217,7 @@ review push <<'EOF'
 EOF
 ```
 
-## 7. `review wait` output (token-critical)
+## 7. `redline wait` output (token-critical)
 
 ### Changes requested
 
@@ -285,14 +285,14 @@ An Express app, bound to `127.0.0.1` on a free port chosen by the OS. Static fil
 | `DELETE /api/comments/<id>` | Delete a draft |
 | `POST /api/comments/<id>/replies` | Reviewer reply on a submitted thread (stored as a draft reply until submit) |
 | `POST /api/submit` | `{verdict: "request_changes" | "approve", summary}`; promotes drafts, sets status |
-| `GET /api/wait?timeout=S` | Used by `review wait`; returns the formatted text from section 7 |
-| `POST /api/push` | Used by `review push`; body is the raw stdin text |
+| `GET /api/wait?timeout=S` | Used by `redline wait`; returns the formatted text from section 7 |
+| `POST /api/push` | Used by `redline push`; body is the raw stdin text |
 
 The server keeps a monotonically increasing `version`; every mutation bumps it and wakes long-pollers. Git runs synchronously, so every operation is atomic on the event loop; only the long-polls (`wait`, `events`) yield.
 
 ### Lifetime
 
-- `review start` launches the server detached if `server.json` is missing or its pid is dead or not responding.
+- `redline start` launches the server detached if `server.json` is missing or its pid is dead or not responding.
 - The server shuts itself down after 2 hours with no API requests and no `pending_review` status.
 
 ## 9. UI
@@ -333,34 +333,34 @@ The **Finish your review** popover has a summary textarea and two options, **Req
 
 ## 10. Claude Code integration
 
-### Slash command: `commands/local-review.md`
+### Slash command: `commands/redline.md`
 
-Install by copying to `~/.claude/commands/local-review.md`.
+Install by copying to `~/.claude/commands/redline.md`.
 
 ```markdown
 ---
 description: GitHub-style local review of current changes; iterate until approved
 allowed-tools: Bash(review:*)
 ---
-Run `review start $ARGUMENTS` and give the user the URL in one line.
+Run `redline start $ARGUMENTS` and give the user the URL in one line.
 
-Then run `review wait` as a background command and stop. You will be notified when it exits. Never poll.
+Then run `redline wait` as a background command and stop. You will be notified when it exits. Never poll.
 
-When `review wait` exits:
-- TIMEOUT: start `review wait` in the background again. Say nothing.
+When `redline wait` exits:
+- TIMEOUT: start `redline wait` in the background again. Say nothing.
 - APPROVED: say "Approved." in one line. Do not commit, stage or end the review unless asked.
-- CHANGES_REQUESTED: address every listed comment. Read only the files and lines you need. Then run one `review push` heredoc with one line per comment: `#<id> resolve: <what you changed>` when fixed, `#<id> reply: <answer>` for questions or disagreement. Keep each reply under 25 words. Then start `review wait` in the background again. Do not summarise the changes to the user; the review page shows them.
+- CHANGES_REQUESTED: address every listed comment. Read only the files and lines you need. Then run one `redline push` heredoc with one line per comment: `#<id> resolve: <what you changed>` when fixed, `#<id> reply: <answer>` for questions or disagreement. Keep each reply under 25 words. Then start `redline wait` in the background again. Do not summarise the changes to the user; the review page shows them.
 
-If `review push` reports unanswered comments, answer them with another push before waiting.
+If `redline push` reports unanswered comments, answer them with another push before waiting.
 ```
 
 ### Permissions
 
-The `allowed-tools` line lets Claude run `review` without approval prompts during the loop. Nothing else is needed: no MCP server, no hooks.
+The `allowed-tools` line lets Claude run `redline` without approval prompts during the loop. Nothing else is needed: no MCP server, no hooks.
 
 ### Fallback if background commands are unavailable
 
-Replace the background instruction with: run `review wait --timeout 590` in the foreground; on `TIMEOUT`, run it again.
+Replace the background instruction with: run `redline wait --timeout 590` in the foreground; on `TIMEOUT`, run it again.
 
 ## 11. Phase 2 (after v1 works)
 
@@ -368,7 +368,7 @@ Replace the background instruction with: run `review wait --timeout 590` in the 
 - Expand hidden context between hunks (`GET /api/blob?round=N&path=P&from=&to=` via `git show <commit>:<path>`).
 - Lightweight syntax highlighting with a small built-in tokeniser for the user's main languages (no library).
 - Suggested changes: a comment with a ```` ```suggestion ```` block that Claude applies verbatim.
-- `review start --staged` to review only staged changes.
+- `redline start --staged` to review only staged changes.
 
 ## 12. Testing
 
@@ -381,14 +381,14 @@ Built-in `node:test` only (`npm test`, i.e. `node --test`). Each test creates a 
 - `push` parsing: valid input, unknown id rejected atomically, unanswered list.
 - Security: missing or wrong token → 401; foreign `Host` → 403; foreign `Origin` on POST → 403; non-JSON POST → 415.
 - Concurrency: `wait` wakes within one second of submit.
-- Recovery: kill the server mid-review → next command restarts it with comments and drafts intact; consume a review without pushing → `review start` resumes and `wait` re-delivers the comments.
-- Cleanup: `start` after an approved review deletes the old refs; orphaned `refs/local-review/*` are removed; `git for-each-ref refs/local-review` shows only the current review.
+- Recovery: kill the server mid-review → next command restarts it with comments and drafts intact; consume a review without pushing → `redline start` resumes and `wait` re-delivers the comments.
+- Cleanup: `start` after an approved review deletes the old refs; orphaned `refs/redline/*` are removed; `git for-each-ref refs/redline` shows only the current review.
 
 ## 13. Acceptance criteria
 
-1. From a repo with uncommitted changes, `/local-review` opens a page listing every changed, added, deleted and renamed file with correct diffs, including untracked files.
+1. From a repo with uncommitted changes, `/redline` opens a page listing every changed, added, deleted and renamed file with correct diffs, including untracked files.
 2. The reviewer can add single-line and range comments on both added and deleted lines, keep them as drafts across a page reload, and submit with Request changes or Approve.
-3. Claude is notified on submit without polling, replies to every comment in a single `review push`, and round 2 appears in the open page with replies threaded and comments relocated or marked outdated.
+3. Claude is notified on submit without polling, replies to every comment in a single `redline push`, and round 2 appears in the open page with replies threaded and comments relocated or marked outdated.
 4. "Changes since round 1" shows only what Claude changed in response.
 5. Approve ends the loop; nothing was committed, staged or added to the user's index.
 6. A typical round costs Claude one `wait` result and one `push` call; `wait` output for a two-comment review is under 120 tokens.

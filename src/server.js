@@ -160,7 +160,7 @@ export async function serve(repo) {
   hosts.push(`127.0.0.1:${port}`, `localhost:${port}`);
   core.url = `http://127.0.0.1:${port}/#t=${token}`;
   writeJson(infoPath, { pid: process.pid, port, token });
-  console.log(`local-review serving ${repo.top} on http://127.0.0.1:${port}/ (run \`review open\` for the page)`);
+  console.log(`redline serving ${repo.top} on http://127.0.0.1:${port}/ (run \`redline open\` for the page)`);
 
   process.on("SIGTERM", stopSoon);
   process.on("SIGINT", stopSoon);

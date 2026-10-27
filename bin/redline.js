@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// local-review: a local, GitHub-style code review loop for Claude Code.
-// `review serve` runs the HTTP server; every other subcommand is a thin HTTP client to it.
+// redline: a local, GitHub-style code review loop for Claude Code.
+// `redline serve` runs the HTTP server; every other subcommand is a thin HTTP client to it.
 import fs from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 import open from "open";
@@ -28,7 +28,7 @@ const run = (fn) => async (...args) => {
   }
 };
 
-const program = new Command("review").description("Local GitHub-style code review loop.");
+const program = new Command("redline").description("Local GitHub-style code review loop.");
 
 program.command("start").description("start or resume a review")
   .argument("[ref]", "review everything since the merge base with this ref")

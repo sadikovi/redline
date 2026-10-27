@@ -1,4 +1,4 @@
-// The text `review wait` prints and `review push` reads.
+// The text `redline wait` prints and `redline push` reads.
 import { ReviewError, splitlines } from "./util.js";
 
 export const PENDING = "pending_review", CHANGES = "changes_requested", APPROVED = "approved";

@@ -11,7 +11,7 @@ import { Repo } from "../src/git.js";
 import { ReviewError } from "../src/util.js";
 
 export const ROOT = path.dirname(import.meta.dirname);
-export const SCRIPT = path.join(ROOT, "bin", "review.js");
+export const SCRIPT = path.join(ROOT, "bin", "redline.js");
 export const GOLDEN = path.join(ROOT, "tests", "golden");
 export const review = { ...diff, ...format, Core, Repo, ReviewError };
 
@@ -69,7 +69,7 @@ export class TempRepo {
   }
 
   serverInfo() {
-    return JSON.parse(fs.readFileSync(path.join(this.dir, ".git", "local-review", "server.json"), "utf8"));
+    return JSON.parse(fs.readFileSync(path.join(this.dir, ".git", "redline", "server.json"), "utf8"));
   }
 
   http(method, p, { body, headers, raw, token = true } = {}) {
