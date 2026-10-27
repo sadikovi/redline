@@ -98,6 +98,7 @@
     lastResult: null,
     conn: "ok",       // ok | lost | unauthorized
     newRound: false,
+    attention: null,  // message shown in the tab title until the page is looked at
     ui: { reply: {}, edit: {}, expanded: {}, outdatedOpen: {}, summary: "" },
   };
 
@@ -122,7 +123,8 @@
   function renderTop() {
     const r = S.review;
     $("#title").textContent = r ? r.title || r.branch || "Local review" : "Local review";
-    document.title = (r && (r.title || r.branch)) ? `Review · ${r.title || r.branch}` : "Local review";
+    const title = (r && (r.title || r.branch)) ? `Review · ${r.title || r.branch}` : "Local review";
+    document.title = S.attention ? `● ${S.attention} · ${title}` : title;
     $("#base").textContent = r ? `base ${r.base.slice(0, 7)}` : "";
     $("#commit-branch").textContent = r && r.branch ? r.branch : "the original branch";
 
@@ -814,6 +816,7 @@
     const submit = async () => {
       const verdict = $('input[name="verdict"]:checked').value;
       const sub = $("#submit-review");
+      if (verdict !== "approve") requestNotifyPermission();
       sub.disabled = true;
       try {
         await api("POST", "/submit", { verdict, summary: summary.value });
@@ -833,6 +836,47 @@
     bindSubmitKey(summary, submit);
   }
 
+  // ---------- attention (tab title, favicon, desktop notification) ----------
+
+  const ICON_IDLE = "data:,";
+  const ICON_ALERT = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#d29922"/></svg>');
+
+  const pageActive = () => !document.hidden && document.hasFocus();
+
+  function setFavicon(href) {
+    const link = $('link[rel="icon"]');
+    if (link) link.href = href;
+  }
+
+  // Flag the tab when something needs the reviewer and they are looking elsewhere.
+  function notify(msg) {
+    if (pageActive()) return;
+    S.attention = msg;
+    setFavicon(ICON_ALERT);
+    renderTop();
+    if ("Notification" in window && Notification.permission === "granted") {
+      try {
+        const n = new Notification("Local review", { body: msg, tag: "local-review" });
+        n.onclick = () => { window.focus(); n.close(); };
+      } catch { /* some browsers only allow notifications from a service worker */ }
+    }
+  }
+
+  function clearAttention() {
+    if (!S.attention || !pageActive()) return;
+    S.attention = null;
+    setFavicon(ICON_IDLE);
+    renderTop();
+  }
+
+  // Ask from a user gesture (submitting a review), when the reviewer is about to wait on Claude.
+  function requestNotifyPermission() {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  }
+
   // ---------- data loading and live updates ----------
 
   async function refreshReview() {
@@ -843,7 +887,9 @@
       if (e.status === 401) { S.conn = "unauthorized"; renderBanners(); }
       throw e;
     }
+    const prev = S.review;
     if (!data.review) {
+      if (prev && prev.status === "approved" && prev.commitRequested) notify(data.lastResult || "Claude committed the changes");
       S.review = null;
       S.ended = true;
       S.version = data.version;
@@ -860,6 +906,7 @@
     S.ended = false;
     S.latest = S.review.rounds.length;
     if (replaced) {
+      notify("New review ready");
       // A new review started on this server: show it from scratch.
       S.knownRounds = S.latest;
       S.newRound = false;
@@ -868,6 +915,11 @@
       S.ui = { reply: {}, edit: {}, expanded: {}, outdatedOpen: {}, summary: "" };
       await loadDiff();
       return;
+    }
+    if (prev && prev.status === "changes_requested" && S.review.status === "pending_review") {
+      notify(`Claude pushed round ${S.latest}`);
+    } else if (S.review.commitError && !prev?.commitError) {
+      notify("Commit failed");
     }
     if (!S.knownRounds) S.knownRounds = S.latest;
     if (S.latest > S.knownRounds) {
@@ -1028,6 +1080,8 @@
   }
 
   async function init() {
+    document.addEventListener("visibilitychange", clearAttention);
+    window.addEventListener("focus", clearAttention);
     setupLayout();
     setupFinish();
     if (!token) {
