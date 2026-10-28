@@ -816,7 +816,6 @@
     const submit = async () => {
       const verdict = $('input[name="verdict"]:checked').value;
       const sub = $("#submit-review");
-      if (verdict !== "approve") requestNotifyPermission();
       sub.disabled = true;
       try {
         await api("POST", "/submit", { verdict, summary: summary.value });
@@ -836,7 +835,7 @@
     bindSubmitKey(summary, submit);
   }
 
-  // ---------- attention (tab title, favicon, desktop notification) ----------
+  // ---------- attention (tab title, favicon) ----------
 
   const ICON_IDLE = "data:,";
   const ICON_ALERT = "data:image/svg+xml," + encodeURIComponent(
@@ -850,17 +849,11 @@
   }
 
   // Flag the tab when something needs the reviewer and they are looking elsewhere.
-  function notify(msg) {
+  function flagAttention(msg) {
     if (pageActive()) return;
     S.attention = msg;
     setFavicon(ICON_ALERT);
     renderTop();
-    if ("Notification" in window && Notification.permission === "granted") {
-      try {
-        const n = new Notification("Redline", { body: msg, tag: "redline" });
-        n.onclick = () => { window.focus(); n.close(); };
-      } catch { /* some browsers only allow notifications from a service worker */ }
-    }
   }
 
   function clearAttention() {
@@ -868,13 +861,6 @@
     S.attention = null;
     setFavicon(ICON_IDLE);
     renderTop();
-  }
-
-  // Ask from a user gesture (submitting a review), when the reviewer is about to wait on Claude.
-  function requestNotifyPermission() {
-    if ("Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission().catch(() => {});
-    }
   }
 
   // ---------- data loading and live updates ----------
@@ -889,7 +875,7 @@
     }
     const prev = S.review;
     if (!data.review) {
-      if (prev && prev.status === "approved" && prev.commitRequested) notify(data.lastResult || "Claude committed the changes");
+      if (prev && prev.status === "approved" && prev.commitRequested) flagAttention(data.lastResult || "Claude committed the changes");
       S.review = null;
       S.ended = true;
       S.version = data.version;
@@ -906,7 +892,7 @@
     S.ended = false;
     S.latest = S.review.rounds.length;
     if (replaced) {
-      notify("New review ready");
+      flagAttention("New review ready");
       // A new review started on this server: show it from scratch.
       S.knownRounds = S.latest;
       S.newRound = false;
@@ -917,9 +903,9 @@
       return;
     }
     if (prev && prev.status === "changes_requested" && S.review.status === "pending_review") {
-      notify(`Claude pushed round ${S.latest}`);
+      flagAttention(`Claude pushed round ${S.latest}`);
     } else if (S.review.commitError && !prev?.commitError) {
-      notify("Commit failed");
+      flagAttention("Commit failed");
     }
     if (!S.knownRounds) S.knownRounds = S.latest;
     if (S.latest > S.knownRounds) {
