@@ -154,6 +154,11 @@ textarea {
   font-size: 13px;
   line-height: 1.5;
 }
+textarea:disabled {
+  background: var(--bg-subtle);
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
 textarea:focus, input:focus, select:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
@@ -607,6 +612,8 @@ pre.anchor {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.summaries { margin-bottom: 16px; }
+
 .orphans {
   margin-bottom: 16px;
   border: 1px solid var(--border);

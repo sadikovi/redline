@@ -319,7 +319,9 @@ export class Core {
 
   push(text) {
     const r = this._require(CHANGES);
-    const entries = parsePush(text);
+    const { entries, summary } = parsePush(text);
+    const asked = r.summaries.find((s) => s.round === r.rounds.length) || null;
+    if (summary !== null && !asked) throw new ReviewError("there is no summary to answer this round");
     const byId = new Map(r.comments.filter((c) => c.state !== "draft").map((c) => [c.id, c]));
     for (const [cid] of entries) {
       if (!byId.has(cid)) throw new ReviewError(`unknown comment #${cid}`);
@@ -332,6 +334,7 @@ export class Core {
       if (action === "resolve" && c.state === "open") c.state = "resolved";
       else if (action === "reply" && c.state === "resolved") c.state = "open";
     }
+    if (summary !== null) asked.reply = { body: summary, round: n, at: nowIso() };
     const prev = r.rounds.at(-1).commit;
     const [commit] = this._snapshot(r.id, n, r.base);
     r.rounds.push({ n, commit, createdAt: nowIso() });
@@ -339,9 +342,10 @@ export class Core {
     r.status = PENDING;
     this._commit(r);
     const mentioned = new Set(entries.map(([cid]) => cid));
-    const unanswered = needed.filter((cid) => !mentioned.has(cid));
+    const unanswered = needed.filter((cid) => !mentioned.has(cid)).map((cid) => "#" + cid);
+    if (asked && summary === null) unanswered.push("summary");
     let line = `round ${n} ok`;
-    if (unanswered.length) line += "; unanswered: " + unanswered.map((cid) => "#" + cid).join(" ");
+    if (unanswered.length) line += "; unanswered: " + unanswered.join(" ");
     return line;
   }
 
@@ -499,6 +503,9 @@ export class Core {
       throw new ReviewError("invalid verdict");
     }
     summary = summary.trim();
+    if (summary && verdict !== "request_changes") {
+      throw new ReviewError("a summary can only be sent with Request changes");
+    }
     const r = this._require(PENDING);
     if (verdict === "approve_commit") {
       this._checkCommitTarget(r); // fail now, not after Claude writes a message

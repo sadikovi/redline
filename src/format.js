@@ -68,18 +68,30 @@ export function formatWait(r) {
 }
 
 const PUSH_RE = /^#(\d+)\s+(resolve|reply)\b\s*(?::\s*(.*))?$/;
+const SUMMARY_RE = /^summary\s*:\s*(.*)$/;
 
-/** Parse push input into [[id, action, message or null]]. */
+/**
+ * Parse push input into {entries: [[id, action, message or null]], summary: answer or null}.
+ * `summary: <answer>` answers the reviewer's overall comment for the round.
+ */
 export function parsePush(text) {
   const entries = [];
+  let summary = null;
   splitlines(text).forEach((raw, idx) => {
     const line = raw.trim();
     if (!line) return;
+    const s = SUMMARY_RE.exec(line);
+    if (s) {
+      if (summary !== null) throw new ReviewError(`line ${idx + 1}: only one summary answer is allowed`);
+      summary = s[1].trim();
+      if (!summary) throw new ReviewError(`line ${idx + 1}: summary needs an answer`);
+      return;
+    }
     const m = PUSH_RE.exec(line);
-    if (!m) throw new ReviewError(`line ${idx + 1}: expected '#<id> resolve|reply: <message>'`);
+    if (!m) throw new ReviewError(`line ${idx + 1}: expected '#<id> resolve|reply: <message>' or 'summary: <answer>'`);
     const msg = (m[3] || "").trim() || null;
     if (m[2] === "reply" && !msg) throw new ReviewError(`line ${idx + 1}: reply needs a message`);
     entries.push([parseInt(m[1], 10), m[2], msg]);
   });
-  return entries;
+  return { entries, summary };
 }

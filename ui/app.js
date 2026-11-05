@@ -299,7 +299,7 @@
   }
 
   function renderMain() {
-    const main = $("#main");
+    const main = $("#files");
     main.replaceChildren();
     S.cards.clear();
     S.form = null;
@@ -623,10 +623,22 @@
 
   // ---------- threads ----------
 
+  // One message: avatar, author, round, optional header extras, then the content.
+  function messageEl(e, headExtras, content) {
+    const who = e.author === "claude" ? "Claude" : "You";
+    return h("div", { class: "entry" },
+      h("div", { class: "avatar" + (e.author === "claude" ? " claude" : "") }, who[0]),
+      h("div", { class: "entry-main" },
+        h("div", { class: "entry-head" },
+          h("span", { class: "who" }, who),
+          h("span", { class: "when" }, `round ${e.round}`),
+          headExtras),
+        content));
+  }
+
   function entryEl(c, e, idx, interactive) {
     const isDraft = (idx === 0 && c.state === "draft") || e.draft;
     const key = idx === 0 ? `c${c.id}` : `c${c.id}r${idx}`;
-    const who = e.author === "claude" ? "Claude" : "You";
     const tools = h("span", { class: "tools" });
     if (interactive && isDraft) {
       tools.append(
@@ -634,12 +646,7 @@
         h("button", { class: "btn-link danger", type: "button", onclick: () => run(
           idx === 0 ? api("DELETE", `/comments/${c.id}`) : api("DELETE", `/comments/${c.id}/replies/${idx}`)) }, "Delete"));
     }
-    const main = h("div", { class: "entry-main" },
-      h("div", { class: "entry-head" },
-        h("span", { class: "who" }, who),
-        h("span", { class: "when" }, `round ${e.round}`),
-        isDraft ? h("span", { class: "badge" }, "Pending") : null,
-        tools));
+    const headExtras = [isDraft ? h("span", { class: "badge" }, "Pending") : null, tools];
     if (interactive && isDraft && S.ui.edit[key] != null) {
       const ta = h("textarea", { rows: 3, dataset: { key }, value: S.ui.edit[key] });
       ta.addEventListener("input", () => { S.ui.edit[key] = ta.value; });
@@ -649,14 +656,11 @@
         run(p.then(() => { delete S.ui.edit[key]; }));
       };
       bindSubmitKey(ta, save);
-      main.append(ta, h("div", { class: "form-buttons" },
+      return messageEl(e, headExtras, [ta, h("div", { class: "form-buttons" },
         h("button", { class: "btn btn-sm", type: "button", onclick: () => { delete S.ui.edit[key]; renderThreads(); } }, "Cancel"),
-        h("button", { class: "btn btn-primary btn-sm", type: "button", onclick: save }, "Update comment")));
-    } else {
-      main.append(richText(e.body));
+        h("button", { class: "btn btn-primary btn-sm", type: "button", onclick: save }, "Update comment"))]);
     }
-    return h("div", { class: "entry" },
-      h("div", { class: "avatar" + (e.author === "claude" ? " claude" : "") }, who[0]), main);
+    return messageEl(e, headExtras, richText(e.body));
   }
 
   function threadEl(c, interactive) {
@@ -773,12 +777,28 @@
       }
     }
     if (orphans.length) {
-      $("#main").prepend(h("div", { class: "orphans" },
+      $("#files").prepend(h("div", { class: "orphans" },
         outdatedBlock("__orphans", orphans, interactive, "Outdated comments on files without changes")));
     }
     if (activeKey) {
       const el = $(`textarea[data-key="${CSS.escape(activeKey)}"]`);
       if (el) { el.focus(); el.setSelectionRange(selStart, selEnd); }
+    }
+  }
+
+  // ---------- review summaries ----------
+
+  // Overall review comments, each followed by Claude's answer once it pushed one.
+  function renderSummaries() {
+    const box = $("#summaries");
+    const list = (S.review && S.review.summaries) || [];
+    box.replaceChildren();
+    box.hidden = !list.length;
+    if (!list.length) return;
+    box.append(h("div", { class: "thread-range" }, "Review summaries"));
+    for (const s of list) {
+      box.append(messageEl({ author: "user", round: s.round }, null, richText(s.body)));
+      if (s.reply) box.append(messageEl({ author: "claude", round: s.reply.round }, null, richText(s.reply.body)));
     }
   }
 
@@ -813,12 +833,20 @@
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !pop.hidden) pop.hidden = true;
     });
+    // Only Request changes sends the summary; approving means there is nothing left for Claude to act on.
+    const verdictOf = () => $('input[name="verdict"]:checked').value;
+    const syncSummary = () => {
+      summary.disabled = verdictOf() !== "request_changes";
+      summary.placeholder = summary.disabled ? "Comments are only sent with Request changes" : "Leave a comment";
+    };
+    $$('input[name="verdict"]').forEach((el) => el.addEventListener("change", syncSummary));
+    syncSummary();
     const submit = async () => {
-      const verdict = $('input[name="verdict"]:checked').value;
+      const verdict = verdictOf();
       const sub = $("#submit-review");
       sub.disabled = true;
       try {
-        await api("POST", "/submit", { verdict, summary: summary.value });
+        await api("POST", "/submit", { verdict, summary: summary.disabled ? "" : summary.value });
         summary.value = "";
         pop.hidden = true;
         S.ui.reply = {};
@@ -883,6 +911,7 @@
       document.body.classList.remove("can-comment");
       renderTop();
       renderBanners();
+      renderSummaries();
       renderThreads();
       return;
     }
@@ -916,6 +945,7 @@
     renderTop();
     renderBanners();
     renderSidebar();
+    renderSummaries();
     renderThreads();
   }
 
@@ -929,6 +959,7 @@
     renderBanners();
     renderMain();
     renderSidebar();
+    renderSummaries();
     renderThreads();
   }
 

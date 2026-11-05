@@ -132,7 +132,8 @@ The server parses unified diff output into JSON for the UI: per file, `{path, ol
       ]
     }
   ],
-  "summaries": [{"round": 1, "body": "optional overall review comment"}]
+  "summaries": [{"round": 1, "body": "optional overall review comment",
+                 "reply": {"body": "Claude's answer", "round": 2, "at": "..."}}]
 }
 ```
 
@@ -195,18 +196,21 @@ The user never has to clean anything up manually. `redline end` exists for when 
 
 ### `redline push` input format
 
-One line per comment. The message runs to the end of the line.
+One line per comment, plus at most one `summary:` line answering the reviewer's overall comment. The message runs to the end of the line.
 
 ```
 #3 resolve: Renamed to parse_header and added a None check.
 #4 reply: Kept the old behaviour because callers rely on it; see line 88.
 #6 resolve
+summary: Split the parser into its own module as suggested.
 ```
 
 - `resolve` posts the reply (if any) and marks the thread resolved.
 - `reply` posts the reply and leaves the thread open for the reviewer.
 - Unknown ids are an error; the whole push is rejected and nothing changes.
 - Comments not mentioned remain open and are listed as unanswered.
+- `summary:` stores the answer on the current round's summary. It is an error when the round has no summary; when it has one and no `summary:` line is given, `summary` is listed as unanswered.
+- An empty push is valid (for example when only a summary was left and Claude has nothing to say), so a summary-only round never leaves the loop waiting.
 
 Claude calls it once per round with a heredoc:
 
@@ -241,7 +245,7 @@ Rules:
 - Code snippet: at most **2 lines** of the anchor, each truncated to 100 characters with `…`, then `...(+K)` if more lines exist. Claude can read the file if it needs more.
 - Only include threads needing Claude's attention: new comments, and resolved or open threads where the reviewer added a reply since Claude's last reply. For a follow-up, print only the reviewer's new message(s), prefixed `(follow-up)`. Do not repeat Claude's earlier reply.
 - Omit resolved threads with no new activity and all outdated threads unless the reviewer replied on them.
-- `SUMMARY:` only if the reviewer wrote one.
+- `SUMMARY:` only if the reviewer wrote one. A summary-only review prints `comments=0` followed by the `SUMMARY:` line; Claude still pushes.
 
 ### Approved
 
@@ -284,7 +288,7 @@ An Express app, bound to `127.0.0.1` on a free port chosen by the OS. Static fil
 | `PATCH /api/comments/<id>` | Edit body (drafts only) or change state (resolve/unresolve) |
 | `DELETE /api/comments/<id>` | Delete a draft |
 | `POST /api/comments/<id>/replies` | Reviewer reply on a submitted thread (stored as a draft reply until submit) |
-| `POST /api/submit` | `{verdict: "request_changes" | "approve", summary}`; promotes drafts, sets status |
+| `POST /api/submit` | `{verdict: "request_changes" | "approve" | "approve_commit", summary}`; promotes drafts, sets status. A non-empty summary is rejected unless the verdict is `request_changes` |
 | `GET /api/wait?timeout=S` | Used by `redline wait`; returns the formatted text from section 7 |
 | `POST /api/push` | Used by `redline push`; body is the raw stdin text |
 
@@ -319,7 +323,9 @@ Plain HTML, CSS and JavaScript (ES2020, no framework; highlight.js for syntax co
 
 ### Finishing a review
 
-The **Finish your review** popover has a summary textarea and two options, **Request changes** and **Approve**, plus **Submit review**. Request changes requires at least one comment or a summary.
+The **Finish your review** popover has a summary textarea and three options, **Request changes**, **Approve** and **Approve and commit**, plus **Submit review**. Request changes requires at least one comment or a summary. The summary textarea is greyed out and disabled while an approve option is selected, since an approval gives Claude nothing to act on.
+
+Submitted summaries are shown in a **Review summaries** box above the file cards, each followed by Claude's `summary:` answer once it has pushed one.
 
 ### Live state
 
@@ -349,9 +355,9 @@ Then run `redline wait` as a background command and stop. You will be notified w
 When `redline wait` exits:
 - TIMEOUT: start `redline wait` in the background again. Say nothing.
 - APPROVED: say "Approved." in one line. Do not commit, stage or end the review unless asked.
-- CHANGES_REQUESTED: address every listed comment. Read only the files and lines you need. Then run one `redline push` heredoc with one line per comment: `#<id> resolve: <what you changed>` when fixed, `#<id> reply: <answer>` for questions or disagreement. Keep each reply under 25 words. Then start `redline wait` in the background again. Do not summarise the changes to the user; the review page shows them.
+- CHANGES_REQUESTED: address every listed comment and the `SUMMARY:` line if there is one; the summary is the reviewer's overall comment and may be the only feedback (`comments=0`). Read only the files and lines you need. Then always run one `redline push` heredoc, even when there are no comments, with one line per comment: `#<id> resolve: <what you changed>` when fixed, `#<id> reply: <answer>` for questions or disagreement. If there was a summary, add one `summary: <what you changed or your answer>` line. Keep each reply under 25 words. Then start `redline wait` in the background again. Do not summarise the changes to the user; the review page shows them.
 
-If `redline push` reports unanswered comments, answer them with another push before waiting.
+If `redline push` reports unanswered comments or `summary`, answer them with another push before waiting.
 ```
 
 ### Permissions

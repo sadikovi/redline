@@ -5,15 +5,25 @@ import { TempRepo, lines, review } from "./helpers.js";
 describe("push parsing", () => {
   test("valid", () => {
     const text = "#3 resolve: Renamed and added None check.\n\n#4 reply: Intentional: see line 88.\n#6 resolve\n";
-    assert.deepEqual(review.parsePush(text), [
-      [3, "resolve", "Renamed and added None check."],
-      [4, "reply", "Intentional: see line 88."],
-      [6, "resolve", null],
-    ]);
+    assert.deepEqual(review.parsePush(text), {
+      entries: [
+        [3, "resolve", "Renamed and added None check."],
+        [4, "reply", "Intentional: see line 88."],
+        [6, "resolve", null],
+      ],
+      summary: null,
+    });
+  });
+
+  test("summary answer", () => {
+    assert.deepEqual(review.parsePush("summary: Split it up.\n#3 resolve"), {
+      entries: [[3, "resolve", null]],
+      summary: "Split it up.",
+    });
   });
 
   test("invalid", () => {
-    for (const bad of ["#3 fixed it", "3 resolve: x", "#4 reply", "#4 reply:   "]) {
+    for (const bad of ["#3 fixed it", "3 resolve: x", "#4 reply", "#4 reply:   ", "summary:", "summary: a\nsummary: b"]) {
       assert.throws(() => review.parsePush(bad), review.ReviewError, bad);
     }
   });
@@ -58,8 +68,41 @@ describe("push", () => {
     assert.equal(core.review.rounds.length, 2);
   });
 
+  test("summary answer is not accepted without a summary", () => {
+    assert.throws(() => core.push("summary: ok\n#1 resolve\n#2 resolve"), /no summary/);
+    assert.equal(core.review.status, "changes_requested");
+  });
+
   test("push requires changes requested", () => {
     core.push("#1 resolve\n#2 resolve");
     assert.throws(() => core.push("#1 resolve"), review.ReviewError);
+  });
+});
+
+describe("summary-only review", () => {
+  let repo, core;
+
+  beforeEach(async () => {
+    repo = new TempRepo();
+    repo.write("a.txt", lines(3));
+    repo.commit();
+    repo.write("a.txt", lines(4));
+    core = repo.core();
+    core.start();
+    core.submit({ verdict: "request_changes", summary: "Add a test." });
+    assert.equal(await core.wait(0), "CHANGES_REQUESTED round=1 comments=0\nSUMMARY: Add a test.");
+  });
+
+  afterEach(() => repo.cleanup());
+
+  test("answer is stored on the summary", () => {
+    assert.equal(core.push("summary: Added one."), "round 2 ok");
+    const r = core.review;
+    assert.equal(r.status, "pending_review");
+    assert.deepEqual([r.summaries[0].reply.body, r.summaries[0].reply.round], ["Added one.", 2]);
+  });
+
+  test("missing answer is listed as unanswered", () => {
+    assert.equal(core.push(""), "round 2 ok; unanswered: summary");
   });
 });

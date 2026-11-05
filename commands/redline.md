@@ -33,6 +33,6 @@ When `REVIEW wait` exits:
   EOF
   ```
   Report the result in one line. If it fails, tell the user the error in one line and stop.
-- CHANGES_REQUESTED: address every listed comment. Read only the files and lines you need. Then run one `REVIEW push` heredoc with one line per comment: `#<id> resolve: <what you changed>` when fixed, `#<id> reply: <answer>` for questions or disagreement. Keep each reply under 25 words. Then start `REVIEW wait` in the background again. Do not summarise the changes to the user; the review page shows them.
+- CHANGES_REQUESTED: address every listed comment and the `SUMMARY:` line if there is one; the summary is the reviewer's overall comment and may be the only feedback (`comments=0`). Read only the files and lines you need. Then always run one `REVIEW push` heredoc, even when there are no comments, with one line per comment: `#<id> resolve: <what you changed>` when fixed, `#<id> reply: <answer>` for questions or disagreement. If there was a summary, add one `summary: <what you changed or your answer>` line. Keep each reply under 25 words. Then start `REVIEW wait` in the background again. Do not summarise the changes to the user; the review page shows them.
 
-If `REVIEW push` reports unanswered comments, answer them with another push before waiting.
+If `REVIEW push` reports unanswered comments or `summary`, answer them with another push before waiting.

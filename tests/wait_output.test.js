@@ -63,6 +63,13 @@ describe("wait output", () => {
     assert.equal(await core.wait(0), "CHANGES_REQUESTED round=1 comments=0\nSUMMARY: Rethink this.");
   });
 
+  test("approving rejects a summary", () => {
+    for (const verdict of ["approve", "approve_commit"]) {
+      assert.throws(() => core.submit({ verdict, summary: "Looks good." }), /only be sent with Request changes/);
+    }
+    assert.equal(core.review.status, "pending_review");
+  });
+
   test("snippet truncation", () => {
     assert.deepEqual(review.formatSnippet(["x".repeat(150)]), ["> " + "x".repeat(99) + "…"]);
     assert.deepEqual(review.formatSnippet(["a", "b", "c"]), ["> a", "> b", "...(+1)"]);
