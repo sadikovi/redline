@@ -1,9 +1,9 @@
 ---
 description: GitHub-style local review of current changes; iterate until approved
 argument-hint: "[<base-ref> | new [<base-ref>] | status | open | pause | stop]"
-allowed-tools: Bash(node /Users/ivansadikov/Developer/redline/bin/redline.js:*), Bash(git log:*), Bash(git diff:*), Bash(git status:*)
+allowed-tools: Bash(redline:*), Bash(git log:*), Bash(git diff:*), Bash(git status:*)
 ---
-`REVIEW` below stands for `node /Users/ivansadikov/Developer/redline/bin/redline.js`. Always run it with that full command.
+`REVIEW` below stands for the `redline` command (installed on `PATH` with `npm link`). Always run it as `redline`.
 
 Arguments: `$ARGUMENTS`. Act on the first word:
 
@@ -32,7 +32,7 @@ When `REVIEW wait` exits:
   <optional body>
   EOF
   ```
-  Report the result in one line. If it fails, tell the user the error in one line and stop.
+  Report the result in one line. If it fails, the review is reopened for the reviewer: tell the user the error in one line, then start `REVIEW wait` in the background again.
 - CHANGES_REQUESTED: address every listed comment and the `SUMMARY:` line if there is one; the summary is the reviewer's overall comment and may be the only feedback (`comments=0`). Read only the files and lines you need. Then always run one `REVIEW push` heredoc, even when there are no comments, with one line per comment: `#<id> resolve: <what you changed>` when fixed, `#<id> reply: <answer>` for questions or disagreement. If there was a summary, add one `summary: <what you changed or your answer>` line. Keep each reply under 25 words. Then start `REVIEW wait` in the background again. Do not summarise the changes to the user; the review page shows them.
 
 If `REVIEW push` reports unanswered comments or `summary`, answer them with another push before waiting.

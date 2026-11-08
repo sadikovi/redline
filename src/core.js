@@ -244,29 +244,53 @@ export class Core {
 
   /** Commit the approved snapshot on the original branch with `git commit` (hooks run). */
   commit(message) {
-    if (typeof message !== "string" || !message.trim()) throw new ReviewError("commit message is empty");
     const r = this._require(APPROVED);
     if (!r.commitRequested) throw new ReviewError("the reviewer did not ask to commit", 409);
-    this._checkCommitTarget(r);
-    const approved = this.git.out(["rev-parse", r.rounds.at(-1).commit + "^{tree}"]);
-    if (this._worktreeTree() !== approved) {
-      throw new ReviewError("working tree differs from the approved snapshot; nothing committed", 409);
-    }
     let line;
-    if (approved === this.git.out(["rev-parse", "HEAD^{tree}"])) {
-      line = `nothing to commit; ${r.branch} already matches the approved snapshot`;
-    } else {
-      const sha = this._gitCommit(r, message.trim() + "\n", approved);
-      line = `committed ${sha.slice(0, 7)} on ${r.branch}`;
-      r.committed = sha;
-      delete r.commitError;
+    try {
+      line = this._commitApproved(r, message);
+    } catch (e) {
+      this._reopenAfterCommitFailure(r, e.message);
+      if (!(e instanceof ReviewError)) throw e;
+      throw new ReviewError(`commit failed: ${e.message}; the review is open again`, 409);
     }
     this.lastResult = line;
     this._archive(r);
     return line;
   }
 
-  _gitCommit(r, message, approved) {
+  /**
+   * The approval asked for a commit that did not happen, so it no longer stands: put the
+   * round back up for review with the error shown, and let the next submission of this
+   * round reach `wait` again.
+   */
+  _reopenAfterCommitFailure(r, error) {
+    r.status = PENDING;
+    r.commitRequested = false;
+    r.commitError = error;
+    r.consumed = r.rounds.length - 1;
+    this._commit(r);
+  }
+
+  /** Validate and commit; returns the one-line result. Leaves the review untouched. */
+  _commitApproved(r, message) {
+    if (typeof message !== "string" || !message.trim()) throw new ReviewError("commit message is empty");
+    this._checkCommitTarget(r);
+    const approved = this.git.out(["rev-parse", r.rounds.at(-1).commit + "^{tree}"]);
+    if (this._worktreeTree() !== approved) {
+      throw new ReviewError("working tree differs from the approved snapshot; nothing committed", 409);
+    }
+    if (approved === this.git.out(["rev-parse", "HEAD^{tree}"])) {
+      return `nothing to commit; ${r.branch} already matches the approved snapshot`;
+    }
+    const sha = this._gitCommit(message.trim() + "\n", approved);
+    r.committed = sha;
+    delete r.commitError;
+    return `committed ${sha.slice(0, 7)} on ${r.branch}`;
+  }
+
+  /** `git add -A` + `git commit`; on failure the user's index is restored exactly. */
+  _gitCommit(message, approved) {
     const index = path.resolve(this.repo.top, this.git.out(["rev-parse", "--git-path", "index"]));
     const backup = fs.existsSync(index) ? fs.readFileSync(index) : null;
     const msgPath = path.join(this.stateDir, "COMMIT_MSG");
@@ -278,13 +302,10 @@ export class Core {
       }
       this.git.run(["commit", "-q", "--cleanup=strip", "-F", msgPath], { env: { GIT_EDITOR: "true" } });
     } catch (e) {
-      if (!(e instanceof ReviewError)) throw e;
       // Put the user's index back exactly as it was.
       if (backup === null) unlinkQuiet(index);
       else writeFileSafe(index, backup);
-      r.commitError = e.message;
-      this._commit(r);
-      throw new ReviewError("commit failed: " + e.message, 409);
+      throw e;
     } finally {
       unlinkQuiet(msgPath);
     }
@@ -526,6 +547,7 @@ export class Core {
     if (verdict === "request_changes" && !summary && !attention(r).length) {
       throw new ReviewError("Request changes needs at least one comment or a summary");
     }
+    delete r.commitError;
     r.status = verdict === "request_changes" ? CHANGES : APPROVED;
     this._commit(r);
     return { status: r.status };

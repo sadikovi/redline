@@ -17,14 +17,14 @@ See [`redline-spec.md`](redline-spec.md) for the full design.
 
 ```sh
 npm install
+npm link            # puts `redline` on PATH (a symlink to this checkout)
 mkdir -p ~/.claude/commands
 cp commands/redline.md ~/.claude/commands/
 ```
 
-The slash command runs the CLI as `node /Users/ivansadikov/Developer/redline/bin/redline.js`,
-so nothing needs to be on `PATH`. If you clone the repo elsewhere, update that path in
-`commands/redline.md` (both the `allowed-tools` line and the `REVIEW` definition).
-To type `redline` by hand, put it on `PATH` with `npm link`.
+The slash command runs the CLI as `redline`, so it works wherever the repo is cloned.
+Because `npm link` symlinks the checkout, edits take effect without reinstalling.
+To uninstall, run `npm unlink -g redline`.
 
 ## Use
 

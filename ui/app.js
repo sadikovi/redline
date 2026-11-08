@@ -186,10 +186,12 @@
         h("strong", {}, `Claude pushed round ${S.latest}`), " · ",
         h("button", { class: "btn-link", type: "button", onclick: () => switchRound(S.latest, 0) }, "View")));
     }
+    if (r.commitError) {
+      box.append(h("div", { class: "banner danger" }, h("strong", {}, "Commit failed"),
+        ` · ${r.commitError} · Nothing was committed; the review is open again.`));
+    }
     if (r.status === "changes_requested") {
       box.append(h("div", { class: "banner warn" }, h("span", { class: "spinner" }), "Waiting for Claude…"));
-    } else if (r.status === "approved" && r.commitError) {
-      box.append(h("div", { class: "banner danger" }, h("strong", {}, "Commit failed"), " · " + r.commitError));
     } else if (r.status === "approved" && r.commitRequested) {
       box.append(h("div", { class: "banner success" }, h("span", { class: "spinner" }),
         h("strong", {}, "Approved"), ` · waiting for Claude to commit on ${r.branch}…`));

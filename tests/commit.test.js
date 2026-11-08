@@ -56,13 +56,33 @@ describe("approve and commit", () => {
     const indexBefore = repo.git("ls-files", "-s");
     assert.throws(() => core.commit("msg"), /approved snapshot/);
     assertUntouched(indexBefore);
-    assert.equal(core.review.status, "approved");
+    assert.equal(core.review.status, "pending_review");
+    assert.match(core.review.commitError, /approved snapshot/);
   });
 
   test("branch moved", async () => {
     await approveCommit();
     repo.git("commit", "-q", "--allow-empty", "-m", "moved");
     assert.throws(() => core.commit("msg"), /moved/);
+    assert.match(core.review.commitError, /moved/);
+  });
+
+  test("empty message is shown as a commit failure", async () => {
+    await approveCommit();
+    assert.throws(() => core.commit("  \n"), /commit failed: commit message is empty; the review is open again/);
+    assert.equal(core.review.commitError, "commit message is empty");
+  });
+
+  test("failed commit reopens the review and redelivers the next submission", async () => {
+    await approveCommit();
+    assert.throws(() => core.commit(""), /open again/);
+    assert.equal(core.review.status, "pending_review");
+    assert.equal(core.review.commitRequested, false);
+    assert.throws(() => core.commit("msg"), review.ReviewError); // no longer approved
+
+    assert.equal(await approveCommit(), "APPROVED round=1 commit=requested");
+    assert.equal(core.review.commitError, undefined);
+    assert.ok(core.commit("msg").startsWith("committed "));
   });
 
   test("branch switched is rejected at submit", () => {
@@ -88,6 +108,7 @@ describe("approve and commit", () => {
     assert.equal(core.review.commitError, "git failed: lint failed");
 
     fs.unlinkSync(hook);
+    await approveCommit();
     assert.ok(core.commit("msg").startsWith("committed "));
   });
 });
