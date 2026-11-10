@@ -178,6 +178,15 @@ describe("security", () => {
     assert.equal((await repo.http("GET", "/vendor/other.js", { token: false }))[0], 404);
   });
 
+  test("extra highlight.js languages are served from node_modules", async () => {
+    const [status, body] = await repo.http("GET", "/vendor/languages/scala.min.js", { token: false });
+    assert.equal(status, 200);
+    assert.ok(body.includes('registerLanguage("scala"'));
+    assert.equal((await repo.http("GET", "/vendor/languages/protobuf.min.js", { token: false }))[0], 200);
+    assert.equal((await repo.http("GET", "/vendor/languages/cobol.min.js", { token: false }))[0], 404);
+    assert.equal((await repo.http("GET", "/vendor/languages/..%2Fhighlight.min.js", { token: false }))[0], 404);
+  });
+
   test("invalid comment path rejected", async () => {
     const [status] = await repo.http("POST", "/api/comments",
       { body: { path: "../etc/passwd", side: "new", start: 1, end: 1, body: "x" } });

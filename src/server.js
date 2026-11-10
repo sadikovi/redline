@@ -9,6 +9,11 @@ import { ReviewError, readJson, unlinkQuiet, writeJson } from "./util.js";
 
 const UI_DIR = path.join(import.meta.dirname, "..", "ui");
 const HIGHLIGHT_JS = fileURLToPath(import.meta.resolve("@highlightjs/cdn-assets/highlight.min.js"));
+// Grammars outside highlight.js's common bundle, served as /vendor/languages/<name>.min.js.
+const EXTRA_LANGUAGES = new Map(["scala", "protobuf"].map((name) => [
+  `${name}.min.js`,
+  fileURLToPath(import.meta.resolve(`@highlightjs/cdn-assets/languages/${name}.min.js`)),
+]));
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; " +
   "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const IDLE_SHUTDOWN = 2 * 3600 * 1000;
@@ -58,6 +63,11 @@ export function createApp(core, { token, hosts, onShutdown }) {
   app.use(express.static(UI_DIR, staticOpts));
   app.get("/vendor/highlight.min.js", (req, res) =>
     res.set("Content-Security-Policy", CSP).sendFile(HIGHLIGHT_JS, { lastModified: false }));
+  app.get("/vendor/languages/:file", (req, res) => {
+    const file = EXTRA_LANGUAGES.get(req.params.file);
+    if (!file) throw new ReviewError("not found", 404);
+    res.set("Content-Security-Policy", CSP).sendFile(file, { lastModified: false });
+  });
 
   const api = express.Router();
   api.use((req, res, next) => {

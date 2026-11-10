@@ -382,12 +382,28 @@
 
   // ---------- syntax highlighting ----------
 
+  // Whole file names (lower case) that identify a language without a useful extension.
+  // Bazel's Starlark has no grammar of its own; it is a Python dialect.
+  const FILENAME_LANGUAGES = {
+    makefile: "makefile", gnumakefile: "makefile",
+    build: "python", workspace: "python",
+  };
+
+  // Extensions that are not a highlight.js language name or alias.
+  const EXTENSION_LANGUAGES = {
+    sc: "scala", sbt: "scala",
+    proto: "protobuf",
+    bzl: "python", bazel: "python", star: "python",
+    pyi: "python",
+    htm: "xml",
+  };
+
   function languageFor(path) {
     if (!window.hljs) return null;
     const name = path.split("/").pop().toLowerCase();
-    if (name === "makefile" || name === "gnumakefile") return "makefile";
     const ext = name.includes(".") ? name.split(".").pop() : "";
-    return ext && hljs.getLanguage(ext) ? ext : null;
+    const lang = FILENAME_LANGUAGES[name] ?? EXTENSION_LANGUAGES[ext] ?? ext;
+    return lang && hljs.getLanguage(lang) ? lang : null;
   }
 
   // Highlight `texts` as one block and split the result back into lines. Each line is a
