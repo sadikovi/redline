@@ -1,5 +1,7 @@
 # redline
 
+[![test](https://github.com/sadikovi/redline/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/sadikovi/redline/actions/workflows/test.yml)
+
 A local, GitHub-style code review loop for Claude Code. Claude makes changes, opens a
 "Files changed" page in your browser, waits for you to submit a review, addresses your
 comments, pushes a new round, and repeats until you approve. You commit, or choose
