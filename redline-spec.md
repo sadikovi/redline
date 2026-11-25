@@ -41,6 +41,7 @@ redline/
     diff.js           # `git diff` parser, anchors
     format.js         # `redline wait` / `redline push` text formats
     git.js            # repository locations, git runner
+    message.js        # commit message layout, review trailer
     server.js         # Express app and `serve`
     client.js         # HTTP client, detached server start
     util.js           # errors, atomic JSON files

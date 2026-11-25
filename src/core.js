@@ -4,6 +4,7 @@ import path from "node:path";
 import { collectRange, findAnchor, parseDiff } from "./diff.js";
 import { APPROVED, CHANGES, PENDING, attention, formatWait, parsePush } from "./format.js";
 import { Git } from "./git.js";
+import { addReviewTrailer, checkCommitMessage } from "./message.js";
 import { ReviewError, nowIso, readJson, splitlines, unlinkQuiet, writeFileSafe, writeJson } from "./util.js";
 
 export const DEFAULT_WAIT = 1800;
@@ -242,10 +243,17 @@ export class Core {
     }
   }
 
-  /** Commit the approved snapshot on the original branch with `git commit` (hooks run). */
+  /**
+   * Commit the approved snapshot on the original branch with `git commit` (hooks run).
+   * A malformed message is rejected before anything is attempted, so the approval stands
+   * and the caller can send a corrected one.
+   */
   commit(message) {
     const r = this._require(APPROVED);
     if (!r.commitRequested) throw new ReviewError("the reviewer did not ask to commit", 409);
+    if (typeof message !== "string") throw new ReviewError("commit message must be text");
+    const isEmpty = !message.trim(); // as in git, an empty message aborts the commit instead
+    if (!isEmpty) checkCommitMessage(message);
     let line;
     try {
       line = this._commitApproved(r, message);
@@ -274,7 +282,7 @@ export class Core {
 
   /** Validate and commit; returns the one-line result. Leaves the review untouched. */
   _commitApproved(r, message) {
-    if (typeof message !== "string" || !message.trim()) throw new ReviewError("commit message is empty");
+    if (!message.trim()) throw new ReviewError("commit message is empty");
     this._checkCommitTarget(r);
     const approved = this.git.out(["rev-parse", r.rounds.at(-1).commit + "^{tree}"]);
     if (this._worktreeTree() !== approved) {
@@ -283,13 +291,16 @@ export class Core {
     if (approved === this.git.out(["rev-parse", "HEAD^{tree}"])) {
       return `nothing to commit; ${r.branch} already matches the approved snapshot`;
     }
-    const sha = this._gitCommit(message.trim() + "\n", approved);
+    const sha = this._gitCommit(addReviewTrailer(message), approved);
     r.committed = sha;
     delete r.commitError;
     return `committed ${sha.slice(0, 7)} on ${r.branch}`;
   }
 
-  /** `git add -A` + `git commit`; on failure the user's index is restored exactly. */
+  /**
+   * `git add -A` + `git commit`; on failure the user's index is restored exactly.
+   * `--cleanup=whitespace` keeps message lines that start with "#".
+   */
   _gitCommit(message, approved) {
     const index = path.resolve(this.repo.top, this.git.out(["rev-parse", "--git-path", "index"]));
     const backup = fs.existsSync(index) ? fs.readFileSync(index) : null;
@@ -300,7 +311,7 @@ export class Core {
       if (this.git.out(["write-tree"]) !== approved) {
         throw new ReviewError("working tree changed during commit; nothing committed", 409);
       }
-      this.git.run(["commit", "-q", "--cleanup=strip", "-F", msgPath], { env: { GIT_EDITOR: "true" } });
+      this.git.run(["commit", "-q", "--cleanup=whitespace", "-F", msgPath], { env: { GIT_EDITOR: "true" } });
     } catch (e) {
       // Put the user's index back exactly as it was.
       if (backup === null) unlinkQuiet(index);

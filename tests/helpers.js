@@ -8,12 +8,13 @@ import { Core } from "../src/core.js";
 import * as diff from "../src/diff.js";
 import * as format from "../src/format.js";
 import { Repo } from "../src/git.js";
+import * as message from "../src/message.js";
 import { ReviewError } from "../src/util.js";
 
 export const ROOT = path.dirname(import.meta.dirname);
 export const SCRIPT = path.join(ROOT, "bin", "redline.js");
 export const GOLDEN = path.join(ROOT, "tests", "golden");
-export const review = { ...diff, ...format, Core, Repo, ReviewError };
+export const review = { ...diff, ...format, ...message, Core, Repo, ReviewError };
 
 // Keep the user's git config out of the tests.
 process.env.GIT_CONFIG_NOSYSTEM = "1";

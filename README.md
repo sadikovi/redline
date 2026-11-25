@@ -86,15 +86,18 @@ State lives in `<git-dir>/redline/`. Server errors are logged to `server.log` th
 
 Choosing **Approve and commit** makes `redline wait` return `APPROVED round=N commit=requested`.
 Claude writes a commit message from its changes and the branch's recent commits, then runs
-`redline commit` with it on stdin. The commit:
+`redline commit` with it on stdin. The message must be a subject line of at most 72
+characters, a blank line and a body (trailers alone are not a body); otherwise it is rejected
+and the approval stands, so Claude can correct it. The commit:
 
 - goes on the branch that was checked out when the review started, and only if that branch is
   still checked out at the same commit (checked again when you submit);
 - contains exactly the approved snapshot: if the working tree changed after approval, nothing
   is committed;
+- ends with a `Reviewed-with: redline` trailer, next to any `Co-Authored-By` lines;
 - uses a real `git commit`, so your hooks, signing and identity apply. If it fails (for example
-  a pre-commit hook), your index is restored, the page shows the error, and the review stays
-  approved so the commit can be retried.
+  a pre-commit hook), your index is restored, the page shows the error, and the review is
+  open again for you to resubmit.
 
 On success the review is archived and the page shows `Approved · committed <sha> on <branch>`.
 

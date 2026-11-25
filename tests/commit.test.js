@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { TempRepo, lines, review } from "./helpers.js";
 
+const MESSAGE = "Rename line two\n\nAdds new.txt too.\n";
+
 describe("approve and commit", () => {
   let repo, core, head, approvedTree;
 
@@ -37,24 +39,60 @@ describe("approve and commit", () => {
     assert.equal(out, `committed ${sha.slice(0, 7)} on main`);
     assert.equal(repo.git("rev-parse", "HEAD^").trim(), head);
     assert.equal(repo.git("rev-parse", "HEAD^{tree}").trim(), approvedTree);
-    assert.equal(repo.git("log", "-1", "--format=%an|%B").trim(), "Test|Rename line two\n\nAdds new.txt too.");
+    assert.equal(repo.git("log", "-1", "--format=%an|%B").trim(), 
+      "Test|Rename line two\n\nAdds new.txt too.\n\nReviewed-with: redline");
     assert.equal(repo.git("status", "--porcelain"), "");
     assert.equal(repo.git("for-each-ref", "refs/redline"), "");
     assert.equal(core.review, null);
     assert.equal(core.payload().lastResult, out);
   });
 
+  const committedMessage = () => repo.git("log", "-1", "--format=%B").trim();
+
+  test("the review trailer joins existing trailers", async () => {
+    await approveCommit();
+    core.commit(MESSAGE + "\nCo-Authored-By: A <a@example.com>\n");
+    assert.equal(committedMessage(),
+      "Rename line two\n\nAdds new.txt too.\n\nCo-Authored-By: A <a@example.com>\nReviewed-with: redline");
+  });
+
+  test("the review trailer is not repeated", async () => {
+    await approveCommit();
+    core.commit(MESSAGE + "\nReviewed-with: redline\n");
+    assert.equal(committedMessage(), "Rename line two\n\nAdds new.txt too.\n\nReviewed-with: redline");
+  });
+
+  test("message lines starting with # are kept", async () => {
+    await approveCommit();
+    core.commit("Rename line two\n\n#12 asked for this.\n");
+    assert.equal(committedMessage(), "Rename line two\n\n#12 asked for this.\n\nReviewed-with: redline");
+  });
+
+  test("malformed message is rejected and the approval stands", async () => {
+    await approveCommit();
+    const indexBefore = repo.git("ls-files", "-s");
+    assert.throws(() => core.commit("Subject only\n"), (e) => {
+      assert.equal(e.message, "commit message needs a body after the subject");
+      return e instanceof review.ReviewError;
+    });
+    assertUntouched(indexBefore);
+    assert.equal(core.review.status, "approved");
+    assert.equal(core.review.commitRequested, true);
+    assert.equal(core.review.commitError, undefined);
+    assert.ok(core.commit(MESSAGE).startsWith("committed "));
+  });
+
   test("plain approve does not allow commit", async () => {
     core.submit({ verdict: "approve" });
     assert.equal(await core.wait(0), "APPROVED round=1");
-    assert.throws(() => core.commit("msg"), review.ReviewError);
+    assert.throws(() => core.commit(MESSAGE), review.ReviewError);
   });
 
   test("working tree changed after approval", async () => {
     await approveCommit();
     repo.write("a.txt", "something else\n");
     const indexBefore = repo.git("ls-files", "-s");
-    assert.throws(() => core.commit("msg"), /approved snapshot/);
+    assert.throws(() => core.commit(MESSAGE), /approved snapshot/);
     assertUntouched(indexBefore);
     assert.equal(core.review.status, "pending_review");
     assert.match(core.review.commitError, /approved snapshot/);
@@ -63,7 +101,7 @@ describe("approve and commit", () => {
   test("branch moved", async () => {
     await approveCommit();
     repo.git("commit", "-q", "--allow-empty", "-m", "moved");
-    assert.throws(() => core.commit("msg"), /moved/);
+    assert.throws(() => core.commit(MESSAGE), /moved/);
     assert.match(core.review.commitError, /moved/);
   });
 
@@ -78,11 +116,11 @@ describe("approve and commit", () => {
     assert.throws(() => core.commit(""), /open again/);
     assert.equal(core.review.status, "pending_review");
     assert.equal(core.review.commitRequested, false);
-    assert.throws(() => core.commit("msg"), review.ReviewError); // no longer approved
+    assert.throws(() => core.commit(MESSAGE), review.ReviewError); // no longer approved
 
     assert.equal(await approveCommit(), "APPROVED round=1 commit=requested");
     assert.equal(core.review.commitError, undefined);
-    assert.ok(core.commit("msg").startsWith("committed "));
+    assert.ok(core.commit(MESSAGE).startsWith("committed "));
   });
 
   test("branch switched is rejected at submit", () => {
@@ -103,13 +141,13 @@ describe("approve and commit", () => {
     fs.mkdirSync(path.dirname(hook), { recursive: true });
     fs.writeFileSync(hook, "#!/bin/sh\necho 'lint failed' >&2\nexit 1\n", { mode: 0o755 });
     const indexBefore = repo.git("ls-files", "-s");
-    assert.throws(() => core.commit("msg"), /lint failed/);
+    assert.throws(() => core.commit(MESSAGE), /lint failed/);
     assertUntouched(indexBefore);
     assert.equal(core.review.commitError, "git failed: lint failed");
 
     fs.unlinkSync(hook);
     await approveCommit();
-    assert.ok(core.commit("msg").startsWith("committed "));
+    assert.ok(core.commit(MESSAGE).startsWith("committed "));
   });
 });
 

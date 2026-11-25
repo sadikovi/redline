@@ -24,15 +24,17 @@ When `REVIEW wait` exits:
 - TIMEOUT: start `REVIEW wait` in the background again. Say nothing.
 - STOPPED or ENDED: the review was paused, stopped or replaced. Say nothing and do not wait again.
 - APPROVED without `commit=requested`: say "Approved." in one line. Do not commit, stage or end the review unless asked.
-- APPROVED with `commit=requested`: write a commit message for the reviewed changes. Base it on what you changed and on the commits already on the branch (`git log -n 20`), matching their style. Then run it once with a heredoc and do not commit any other way:
+- APPROVED with `commit=requested`: write a commit message for the reviewed changes. Base it on what you changed and on the commits already on the branch (`git log -n 20`), matching their style. The message must be a subject line of at most 72 characters, a blank line, and a body saying what changed and why; trailers such as `Co-Authored-By` go last, after a blank line, and do not count as a body. `REVIEW commit` adds a `Reviewed-with: redline` trailer itself, so do not write it. Run it with a heredoc and do not commit any other way:
   ```
   REVIEW commit <<'EOF'
   <subject line>
 
-  <optional body>
+  <body>
+
+  <optional trailers>
   EOF
   ```
-  Report the result in one line. If it fails, the review is reopened for the reviewer: tell the user the error in one line, then start `REVIEW wait` in the background again.
+  If it reports a problem with the commit subject or message and does not say the review is open again, fix the message and run it again. Otherwise report the result in one line. If it fails with "the review is open again", tell the user the error in one line, then start `REVIEW wait` in the background again.
 - CHANGES_REQUESTED: address every listed comment and the `SUMMARY:` line if there is one; the summary is the reviewer's overall comment and may be the only feedback (`comments=0`). Read only the files and lines you need. Then always run one `REVIEW push` heredoc, even when there are no comments, with one line per comment: `#<id> resolve: <what you changed>` when fixed, `#<id> reply: <answer>` for questions or disagreement. If there was a summary, add one `summary: <what you changed or your answer>` line. Keep each reply under 25 words. Then start `REVIEW wait` in the background again. Do not summarise the changes to the user; the review page shows them.
 
 If `REVIEW push` reports unanswered comments or `summary`, answer them with another push before waiting.
